@@ -1,0 +1,31 @@
+name: Build Android APK
+on:
+  workflow_dispatch: # Ci permette di avviarlo con un click
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          pip install flet
+          pip install -r requirements.txt
+
+      - name: Build APK with Flet
+        uses: flet-dev/flet-action@v0.1.0
+        with:
+          platform: android
+          template: app
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v3
+        with:
+          name: NaviX-Installer
+          path: build/apk/*.apk
