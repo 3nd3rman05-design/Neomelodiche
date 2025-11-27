@@ -1,31 +1,66 @@
 name: Build Android APK
 on:
-  workflow_dispatch: # Ci permette di avviarlo con un click
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4  # Aggiornato alla versione 4
 
       - name: Setup Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # Aggiornato alla versione 5
         with:
           python-version: '3.11'
 
-      - name: Install Dependencies
+      - name: Install Buildozer dependencies
         run: |
-          pip install flet
-          pip install -r requirements.txt
+          sudo apt-get update
+          sudo apt-get install -y \
+            python3-pip \
+            build-essential \
+            git \
+            python3-dev \
+            ffi-dev \
+            libffi-dev \
+            libssl-dev \
+            libltdl-dev \
+            libncurses5-dev \
+            libncursesw5-dev \
+            zlib1g-dev
+          pip install --upgrade pip
+          pip install buildozer cython==0.29.33
 
-      - name: Build APK with Flet
-        uses: flet-dev/flet-action@v0.1.0
-        with:
-          platform: android
-          template: app
+      - name: Init Buildozer
+        run: buildozer init
+
+      - name: Configure Buildozer (Injecting Requirements)
+        # Qui usiamo un trucco per modificare il file di configurazione al volo
+        # senza che tu debba caricarlo da PC.
+        run: |
+          # 1. Impostiamo il titolo dell'App
+          sed -i 's/title = My Application/title = NaviX/' buildozer.spec
+          
+          # 2. Impostiamo il nome del pacchetto
+          sed -i 's/package.name = myapp/package.name = navix/' buildozer.spec
+          
+          # 3. Aggiungiamo le librerie (Flet + Requests)
+          # NOTA: openssl serve per far funzionare https/http
+          sed -i 's/requirements = python3,kivy/requirements = python3,flet,requests,openssl/' buildozer.spec
+          
+          # 4. Permessi Internet (FONDAMENTALE)
+          sed -i 's/android.permissions = INTERNET/android.permissions = INTERNET,ACCESS_NETWORK_STATE,WAKE_LOCK/' buildozer.spec
+          
+          # 5. Architettura (Arm64 per telefoni moderni)
+          sed -i 's/#android.archs = arm64-v8a/android.archs = arm64-v8a/' buildozer.spec
+
+      - name: Build APK with Buildozer
+        run: |
+          # Accetta la licenza automaticamente e compila
+          yes | buildozer android debug
 
       - name: Upload APK
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4 # Aggiornato alla versione 4 (Fix errore deprecation)
         with:
           name: NaviX-Installer
-          path: build/apk/*.apk
+          path: bin/*.apk
