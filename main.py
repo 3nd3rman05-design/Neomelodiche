@@ -13,13 +13,13 @@ from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 
 # --- ⚠️ CONFIGURAZIONE ⚠️ ---
-IP_CASA = 'http://..'   
-IP_REMOTO = 'http://..'    
-USERNAME = '...'
-PASSWORD = '...'             
+IP_CASA = 'http://192.168.1.20:4533'   
+IP_REMOTO = 'http://100.96.220.44:4533'    
+USERNAME = 'Gino'
+PASSWORD = 'XRtKMoaoSroMC1yJ'             
 # ----------------------------
 
-# --- 🛡️ PROXY TURBO (FLUSH ATTIVO) 🛡️ ---
+# --- 🛡️ PROXY INTELLIGENTE (RANGE SUPPORT) 🛡️ ---
 PROXY_PORT = 54321
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
@@ -40,38 +40,40 @@ class StreamProxyHandler(BaseHTTPRequestHandler):
             b64_url = query['q'][0]
             real_url = base64.b64decode(b64_url).decode('utf-8')
             
-            # Headers per sembrare un browser E disabilitare la cache
-            fake_headers = {
+            # --- INTELLIGENZA HEADER ---
+            # Copiamo la richiesta del telefono e la passiamo a Navidrome
+            headers_to_send = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Range': 'bytes=0-', # Chiediamo tutto subito
-                'Connection': 'keep-alive'
+                'Accept': '*/*'
             }
             
-            # Timeout breve per il primo byte, lungo per il resto
-            with requests.get(real_url, headers=fake_headers, stream=True, timeout=5) as r:
-                if r.status_code in [200, 206]:
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'audio/mpeg')
-                    self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
-                    self.send_header('Pragma', 'no-cache')
-                    self.send_header('Expires', '0')
-                    # Passiamo il content-length se c'è, aiuta la barra di progresso
-                    if 'Content-Length' in r.headers:
-                        self.send_header('Content-Length', r.headers['Content-Length'])
-                    self.end_headers()
-                    
-                    # ⚠️ IL SEGRETO: Chunk piccoli e FLUSH immediato
-                    # 4096 bytes = 4KB. Piccolo abbastanza per partire subito.
-                    for chunk in r.iter_content(chunk_size=4096):
-                        if chunk:
-                            try:
-                                self.wfile.write(chunk)
-                                self.wfile.flush() # <--- FORZA L'INVIO AL TELEFONO
-                            except (BrokenPipeError, ConnectionResetError):
-                                break 
-                else:
-                    # Se il server dà errore, chiudiamo subito
-                    self.send_error(404)
+            # FONDAMENTALE: Se Android chiede un Range, lo passiamo!
+            if 'Range' in self.headers:
+                headers_to_send['Range'] = self.headers['Range']
+            
+            # Scarichiamo lo stream
+            with requests.get(real_url, headers=headers_to_send, stream=True, timeout=10) as r:
+                # Rispondiamo al telefono con lo stesso codice di Navidrome (200 o 206)
+                self.send_response(r.status_code)
+                
+                # Copiamo gli header vitali per Android
+                headers_to_keep = ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges']
+                for key, value in r.headers.items():
+                    # Trova header case-insensitive
+                    for k in headers_to_keep:
+                        if key.lower() == k.lower():
+                            self.send_header(k, value)
+                            
+                self.end_headers()
+                
+                # Sputiamo i dati velocemente
+                for chunk in r.iter_content(chunk_size=32768):
+                    if chunk:
+                        try:
+                            self.wfile.write(chunk)
+                        except (BrokenPipeError, ConnectionResetError):
+                            # Android ha chiuso perché ha avuto abbastanza dati (normale per i Range)
+                            break 
                         
         except Exception as e:
             pass
@@ -114,7 +116,7 @@ class UltimatePlayer:
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
         token = hashlib.md5((PASSWORD + salt).encode('utf-8')).hexdigest()
-        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'TurboClient', 'f': 'json'}
+        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'RangeClient', 'f': 'json'}
 
     # --- 1. SELEZIONE ---
     def show_selector(self):
@@ -270,14 +272,13 @@ class UltimatePlayer:
 
         params = self.get_auth_params()
         params['id'] = self.current_song_data['id']
-        # MP3 Obbligatorio
-        real_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=128"
+        real_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=192"
         for k, v in params.items(): real_url += f"&{k}={v}"
 
         b64_url = base64.b64encode(real_url.encode('utf-8')).decode('utf-8')
         proxy_url = f"http://127.0.0.1:{PROXY_PORT}/stream.mp3?q={b64_url}"
 
-        self.debug_label.value = "BUFFERING (TURBO FLUSH)..."
+        self.debug_label.value = "BUFFERING (RANGE AWARE)..."
         self.page.update()
 
         self.audio_player = flet_audio.Audio(
@@ -369,6 +370,3 @@ def main(page: ft.Page):
     app.show_selector()
 
 ft.app(target=main)
-
-
-
