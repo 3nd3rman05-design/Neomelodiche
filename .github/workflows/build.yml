@@ -1,4 +1,4 @@
-name: Build Flet APK (Stable)
+name: Build Flet APK (Golden Stable)
 on:
   workflow_dispatch:
 
@@ -8,34 +8,35 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Installa Java 17
+      # 1. Installa Java 11 (Più stabile per build vecchie)
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '17'
+          java-version: '11'
 
-      # Installa Flutter (Versione compatibile con Flet 0.25.2)
+      # 2. Installa Flutter 3.19.6 (La versione perfetta per Flet 0.25)
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          flutter-version: '3.22.0'
+          flutter-version: '3.19.6'
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # Forziamo l'installazione della versione STABILE di Flet
+      # 3. Installa le dipendenze forzando la versione corretta
       - name: Install Dependencies
         run: |
           pip install -U pip
-          pip install flet==0.25.2 requests
+          pip install -r requirements.txt
 
-      # Compiliamo usando il template della versione 0.25.2
+      # 4. Compila l'APK
       - name: Build APK with Flet
         run: |
+          # Aggiungiamo --verbose per vedere eventuali errori se fallisce ancora
           flet build apk --project main.py --verbose
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NaviX-App-Stable
+          name: NaviX-Final-App
           path: build/apk/*.apk
