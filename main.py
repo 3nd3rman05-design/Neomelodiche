@@ -7,11 +7,12 @@ import flet_audio
 import time
 
 # --- ⚠️ CONFIGURAZIONE ⚠️ ---
-IP_CASA = 'http://192.168.1.20:4533'   
-IP_REMOTO = 'http://100.96.220.44:4533'    
-USERNAME = 'Gino'
-PASSWORD = 'XRtKMoaoSroMC1yJ'             
+IP_CASA = 'http://ip tuo fisso'   
+IP_REMOTO = 'http://ip tuo remoto'    
+USERNAME = 'username tuo'
+PASSWORD = 'password tua'             
 # ----------------------------
+#questo programma e' scritto da un ai e fa cagare, e' un test
 
 class UltimatePlayer:
     def __init__(self, page: ft.Page):
@@ -298,3 +299,4 @@ def main(page: ft.Page):
     app.show_selector()
 
 ft.app(target=main)
+
