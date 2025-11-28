@@ -22,16 +22,15 @@ class UltimatePlayer:
         self.is_playing = False 
         self.last_click_time = 0 
         
-        # --- IL TUO SISTEMA DI CRONOMETRO ---
-        self.track_duration = 0      # Durata totale (da Navidrome)
-        self.track_position = 0      # Secondo attuale (contato da noi)
-        self.watchdog_running = True # Motore acceso
+        # TIMER
+        self.track_duration = 0      
+        self.track_position = 0      
+        self.watchdog_running = True 
         
-        # Cache
+        # CACHE
         self.cache_dir = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_buffer")
         self._safe_wipe_cache()
 
-        # Stile
         self.COLOR_BG = "#000000"       
         self.COLOR_TEXT = "#FFFFFF"     
         self.FONT_NAME = "Courier New"  
@@ -42,44 +41,30 @@ class UltimatePlayer:
         self.page.padding = 0
 
         self.songs_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
-        
-        # Etichetta che farà da "Barra di Caricamento"
         self.time_label = ft.Text("--:-- / --:--", color="#00FF00", size=14, font_family=self.FONT_NAME, weight="bold")
-
         self.config = {"ip_home": "", "ip_remote": "", "user": "", "pass": ""}
 
-        # Avvio il Cervello del Timer
         threading.Thread(target=self._manual_timer_loop, daemon=True).start()
 
-    # --- FORMATTAZIONE TEMPO (es. 125s -> 02:05) ---
     def format_time(self, seconds):
         if seconds < 0: return "00:00"
         m, s = divmod(int(seconds), 60)
         return f"{m:02d}:{s:02d}"
 
-    # --- IL CRONOMETRO MANUALE (Cuore del sistema) ---
     def _manual_timer_loop(self):
         while self.watchdog_running:
-            time.sleep(1) # Aspetta 1 secondo esatto
-            
-            # Se la musica sta suonando E abbiamo una durata valida
+            time.sleep(1)
             if self.is_playing and self.track_duration > 0:
                 self.track_position += 1
-                
-                # Calcola progresso
-                curr_str = self.format_time(self.track_position)
-                tot_str = self.format_time(self.track_duration)
-                
-                # Aggiorna la scritta a schermo (Thread Safe)
-                # Mostra: PLAYING: 01:15 / 03:20
+                curr = self.format_time(self.track_position)
+                tot = self.format_time(self.track_duration)
                 try:
-                    self.time_label.value = f"TIME: {curr_str} / {tot_str}"
+                    self.time_label.value = f"{curr} / {tot}"
                     self.page.update()
                 except: pass
 
-                # CONTROLLO FINE CANZONE (+3 secondi di buffer come hai chiesto)
-                if self.track_position >= (self.track_duration + 3):
-                    print("MANUAL TIMER: Song Finished -> Next")
+                # AUTO NEXT
+                if self.track_position >= (self.track_duration + 2):
                     self.track_position = 0 
                     self.track_duration = 0
                     self.next_track_safe()
@@ -88,7 +73,6 @@ class UltimatePlayer:
         try: self.next_track()
         except: pass
 
-    # --- BOOT ---
     def safe_boot(self):
         try:
             if self.page.client_storage.contains_key("navix_cfg"):
@@ -130,13 +114,10 @@ class UltimatePlayer:
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
         token = hashlib.md5((self.config["pass"] + salt).encode('utf-8')).hexdigest()
-        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'ChronoClient', 'f': 'json'}
+        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'Navix', 'f': 'json'}
 
     def show_selector(self):
         self.page.clean()
-        # Reset totale quando siamo al menu
-        self.is_playing = False 
-        self.track_position = 0
         self.kill_ghosts() 
         
         def rst(e): 
@@ -157,6 +138,9 @@ class UltimatePlayer:
         self.base_url = url
         self.page.clean()
         
+        # ⚠️ NESSUN CLEANUP AUDIO QUI!
+        # Così la musica continua in background.
+
         header = ft.Container(content=ft.Row([ft.Icon(ft.Icons.STORAGE, color="white"), ft.Text("DATABASE", font_family=self.FONT_NAME)], alignment=ft.MainAxisAlignment.CENTER), bgcolor="#111111", padding=20)
         
         btn = None
@@ -198,44 +182,46 @@ class UltimatePlayer:
         self.page.add(ft.Container(content=ft.Column([
             ft.Row([ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _: self.load_library_view(self.base_url))]),
             ft.Container(height=20), ft.Container(content=img, border=ft.border.all(4, "white")),
-            ft.Container(height=20), 
-            # QUI C'È LA TUA BARRA DI CARICAMENTO TESTUALE
-            self.time_label, 
-            ft.Container(height=20),
+            ft.Container(height=20), self.time_label, ft.Container(height=20),
             ft.Text(self.current_song_data['title'], size=20, font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
             ft.Text(self.current_song_data.get('artist','?'), size=14, color="grey", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
             ft.Container(expand=True), controls, ft.Container(height=50)
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER), padding=20, expand=True))
         self.page.update()
 
+    # --- KILLER CHIRURGICO PER KEY ---
     def kill_ghosts(self):
-        if self.audio_player:
-            try:
-                self.audio_player.release()
-                if self.audio_player in self.page.overlay:
-                    self.page.overlay.remove(self.audio_player)
-            except: pass
-            self.audio_player = None
+        # Cerca e distruggi SOLO l'oggetto con key="main_audio"
+        # Questo evita di cancellare cose a caso, ma rimuove sicuro il player vecchio
+        found = False
+        for control in self.page.overlay[:]:
+            if isinstance(control, flet_audio.Audio) or control.key == "main_audio":
+                try: 
+                    control.release()
+                    self.page.overlay.remove(control)
+                    found = True
+                except: pass
+        
+        if found: self.page.update()
+        self.audio_player = None
 
     def play_track_index(self, index):
         if index < 0 or index >= len(self.playlist): return
         if time.time() - self.last_click_time < 0.5: return 
         self.last_click_time = time.time()
 
+        # Uccidi il vecchio PRIMA di fare qualsiasi cosa
         self.kill_ghosts() 
 
         self.current_index = index
         self.current_song_data = self.playlist[index]
-        self.is_playing = False # Aspettiamo il download
+        self.is_playing = False 
         
-        # --- RESETTA IL CRONOMETRO ---
         self.track_position = 0
-        try:
-            self.track_duration = int(self.current_song_data.get("duration", 180)) # Prende la durata vera!
+        try: self.track_duration = int(self.current_song_data.get("duration", 180))
         except: self.track_duration = 180
         
-        self.time_label.value = "LOADING..." # Feedback immediato
-
+        self.time_label.value = "LOADING..."
         self.show_player_view()
         
         s_id = self.current_song_data['id']
@@ -245,9 +231,9 @@ class UltimatePlayer:
             self._start_playback(path)
             threading.Thread(target=self._preload_next, args=(index,), daemon=True).start()
         else:
-            threading.Thread(target=self._download_manager, args=(index,), daemon=True).start()
+            threading.Thread(target=self._dl_manager, args=(index,), daemon=True).start()
 
-    def _download_manager(self, index):
+    def _dl_manager(self, index):
         s_id = self.playlist[index]['id']
         path = os.path.join(self.cache_dir, f"{s_id}.mp3")
         
@@ -266,7 +252,13 @@ class UltimatePlayer:
             p = os.path.join(self.cache_dir, f"{nxt['id']}.mp3")
             ids.append(nxt['id'])
             if not os.path.exists(p): self._dl_file(nxt['id'], p)
-        self._prune(ids)
+        
+        try:
+            for f in glob.glob(os.path.join(self.cache_dir, "*.mp3")):
+                if os.path.basename(f).replace(".mp3", "") not in ids:
+                    try: os.remove(f)
+                    except: pass
+        except: pass
 
     def _dl_file(self, s_id, path):
         try:
@@ -282,22 +274,16 @@ class UltimatePlayer:
             return True
         except: return False
 
-    def _prune(self, ids):
-        try:
-            for f in glob.glob(os.path.join(self.cache_dir, "*.mp3")):
-                if os.path.basename(f).replace(".mp3", "") not in ids:
-                    try: os.remove(f)
-                    except: pass
-        except: pass
-
     def _start_playback(self, path):
         try:
             self.is_playing = True
             if hasattr(self, 'btn_play_icon'): self.btn_play_icon.name = ft.Icons.PAUSE
             self.page.update()
             
-            # NOTA: Rimuoviamo gli eventi on_audio_state perché gestiamo tutto noi col cronometro
-            self.audio_player = flet_audio.Audio(src=path, autoplay=True, volume=1.0)
+            # Key="main_audio" è la chiave per trovarlo e ucciderlo dopo
+            self.audio_player = flet_audio.Audio(
+                src=path, autoplay=True, volume=1.0, key="main_audio" 
+            )
             self.page.overlay.append(self.audio_player)
             self.page.update()
         except: pass
@@ -306,11 +292,11 @@ class UltimatePlayer:
         if not self.audio_player: return
         if self.is_playing:
             self.audio_player.pause()
-            self.is_playing = False # IL CRONOMETRO SI FERMA QUI
+            self.is_playing = False
             self.btn_play_icon.name = ft.Icons.PLAY_ARROW
         else:
             self.audio_player.resume()
-            self.is_playing = True # IL CRONOMETRO RIPARTE QUI
+            self.is_playing = True
             self.btn_play_icon.name = ft.Icons.PAUSE
         self.page.update()
         self.audio_player.update()
