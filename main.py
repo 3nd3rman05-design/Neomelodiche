@@ -8,7 +8,7 @@ import time
 import threading
 import base64
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from socketserver import ThreadingMixIn # <--- L'ARMA SEGRETA
+from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 
 # --- ⚠️ CONFIGURAZIONE ⚠️ ---
@@ -18,15 +18,14 @@ USERNAME = 'Gino'
 PASSWORD = 'XRtKMoaoSroMC1yJ'             
 # ----------------------------
 
-# --- 🛡️ PROXY MULTI-THREAD (Non si blocca mai) ---
+# --- 🛡️ PROXY CHE FINGE DI ESSERE UN BROWSER 🛡️ ---
 PROXY_PORT = 54321
 
-# Questa classe magica permette di gestire più richieste insieme
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 class StreamProxyHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args): return # Zitto nei log
+    def log_message(self, format, *args): return
 
     def do_GET(self):
         try:
@@ -40,22 +39,27 @@ class StreamProxyHandler(BaseHTTPRequestHandler):
             b64_url = query['q'][0]
             real_url = base64.b64decode(b64_url).decode('utf-8')
             
+            # TRUCCO: Headers falsi per sembrare un browser vero
+            fake_headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': '*/*'
+            }
+            
             # Scarichiamo con stream=True
-            with requests.get(real_url, stream=True, timeout=10) as r:
+            with requests.get(real_url, headers=fake_headers, stream=True, timeout=10) as r:
                 if r.status_code == 200:
                     self.send_response(200)
-                    for key, value in r.headers.items():
-                        if key.lower() in ['content-type', 'content-length', 'accept-ranges']:
-                            self.send_header(key, value)
+                    # FORZIAMO Android a credere che sia un MP3 standard
+                    self.send_header('Content-Type', 'audio/mpeg')
                     self.end_headers()
                     
-                    # Inviamo i dati a pacchetti
-                    for chunk in r.iter_content(chunk_size=32768):
+                    # Buffer ottimizzato per Android
+                    for chunk in r.iter_content(chunk_size=65536):
                         if chunk:
                             try:
                                 self.wfile.write(chunk)
                             except BrokenPipeError:
-                                break # Il telefono ha chiuso la connessione, usciamo
+                                break 
                 else:
                     self.send_error(r.status_code, "Remote Error")
                         
@@ -64,8 +68,8 @@ class StreamProxyHandler(BaseHTTPRequestHandler):
 
 def start_proxy_server():
     try:
-        # Usiamo il server Threaded invece di quello base
-        server = ThreadedHTTPServer(('127.0.0.1', PROXY_PORT), StreamProxyHandler)
+        # 0.0.0.0 è più permissivo di 127.0.0.1 su alcuni Android
+        server = ThreadedHTTPServer(('0.0.0.0', PROXY_PORT), StreamProxyHandler)
         print(f"PROXY STARTED ON {PROXY_PORT}")
         server.serve_forever()
     except Exception as e:
@@ -101,7 +105,7 @@ class UltimatePlayer:
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
         token = hashlib.md5((PASSWORD + salt).encode('utf-8')).hexdigest()
-        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'ThreadClient', 'f': 'json'}
+        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'BrowserClient', 'f': 'json'}
 
     # --- 1. SELEZIONE ---
     def show_selector(self):
@@ -257,13 +261,14 @@ class UltimatePlayer:
 
         params = self.get_auth_params()
         params['id'] = self.current_song_data['id']
-        real_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=192"
+        # BITRATE ABBASSATO A 128 PER VELOCITÀ MASSIMA
+        real_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=128&estimateContentLength=true"
         for k, v in params.items(): real_url += f"&{k}={v}"
 
         b64_url = base64.b64encode(real_url.encode('utf-8')).decode('utf-8')
         proxy_url = f"http://127.0.0.1:{PROXY_PORT}/stream.mp3?q={b64_url}"
 
-        self.debug_label.value = "BUFFERING (SECURE THREAD)..."
+        self.debug_label.value = "BUFFERING (FAKE BROWSER)..."
         self.page.update()
 
         self.audio_player = flet_audio.Audio(
@@ -280,7 +285,7 @@ class UltimatePlayer:
         self.show_player_view()
 
     def on_loaded_ok(self):
-        self.debug_label.value = "PLAYING (PROXY OK)"
+        self.debug_label.value = "PLAYING (SUCCESS)"
         self.debug_label.color = "#00FF00"
         self.page.update()
 
@@ -324,7 +329,9 @@ class UltimatePlayer:
         try:
             params = self.get_auth_params()
             params['size'] = 100
-            res = requests.get(f"{self.base_url}/rest/getRandomSongs", params=params, timeout=10)
+            # User agent anche qui per sicurezza
+            fake_headers = {'User-Agent': 'Mozilla/5.0'}
+            res = requests.get(f"{self.base_url}/rest/getRandomSongs", headers=fake_headers, params=params, timeout=10)
             data = res.json()
             self.songs_column.controls.clear()
             self.playlist = []
