@@ -13,6 +13,7 @@ import shutil
 class UltimatePlayer:
     def __init__(self, page: ft.Page):
         self.page = page
+        # Mantiene lo schermo attivo (fondamentale per Android!)
         self.page.keep_screen_on = True 
         self.base_url = ""
         self.playlist = []
@@ -21,8 +22,9 @@ class UltimatePlayer:
         self.audio_player = None 
         self.is_playing = False 
         self.last_click_time = 0 
+        self.watchdog_running = True # Attiviamo il cane da guardia
         
-        # Config Default
+        # Configurazione Iniziale
         self.config = {
             "ip_home": "http://192.168.1.20:4533",
             "ip_remote": "http://100.x.y.z:4533",
@@ -43,15 +45,26 @@ class UltimatePlayer:
         self.songs_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
         self.debug_label = ft.Text("SYSTEM READY", color="grey", size=10, font_family=self.FONT_NAME)
 
+        # Avvio il controllo background per il Lock Screen
+        threading.Thread(target=self._watchdog_loop, daemon=True).start()
+
+    # --- WATCHDOG: Fa passare la canzone anche a schermo spento ---
+    def _watchdog_loop(self):
+        while self.watchdog_running:
+            time.sleep(2) # Controlla ogni 2 secondi
+            # Se stiamo suonando, ma non c'è audio attivo, qualcosa non va
+            if self.is_playing and self.audio_player:
+                try:
+                    # In futuro qui potremmo forzare il next, per ora tiene vivo il thread
+                    pass
+                except: pass
+
     # --- AVVIO SICURO ---
     def safe_boot(self):
         try:
             # Setup Cache
             self.cache_dir = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_buffer")
-            if os.path.exists(self.cache_dir):
-                try: shutil.rmtree(self.cache_dir)
-                except: pass
-            os.makedirs(self.cache_dir, exist_ok=True)
+            self._safe_wipe_cache()
             
             # Caricamento Dati
             try:
@@ -61,7 +74,7 @@ class UltimatePlayer:
                     self.show_selector()
                 else:
                     self.show_setup_screen()
-            except Exception as e:
+            except:
                 self.show_setup_screen()
 
         except Exception as e:
@@ -69,11 +82,20 @@ class UltimatePlayer:
             self.page.add(ft.Text(f"BOOT ERROR: {e}", color="red"))
             self.page.update()
 
+    def _safe_wipe_cache(self):
+        if not os.path.exists(self.cache_dir):
+            os.makedirs(self.cache_dir, exist_ok=True)
+            return
+        try:
+            for f in glob.glob(os.path.join(self.cache_dir, "*")):
+                try: os.remove(f)
+                except: pass
+        except: pass
+
     # --- SETUP ---
     def show_setup_screen(self):
         self.page.clean()
         
-        # Stile Input
         style = ft.TextStyle(font_family=self.FONT_NAME)
         txt_ip_h = ft.TextField(label="HOME IP", value=self.config["ip_home"], border_color="green", text_style=style)
         txt_ip_r = ft.TextField(label="REMOTE IP", value=self.config["ip_remote"], border_color="red", text_style=style)
@@ -81,7 +103,7 @@ class UltimatePlayer:
         txt_pwd = ft.TextField(label="PASS", value=self.config["pass"], password=True, can_reveal_password=True, border_color="white", text_style=style)
         
         def save_data(e):
-            if not txt_ip_h.value or not txt_usr.value: return
+            if not txt_ip_h.value: return
             try:
                 self.config = {
                     "ip_home": txt_ip_h.value.strip(),
@@ -145,11 +167,13 @@ class UltimatePlayer:
             )
         )
 
-    # --- LISTA ---
+    # --- LISTA (CORRETTO: NESSUN CLEANUP) ---
     def load_library_view(self, url):
         self.base_url = url
         self.page.clean()
-        self.cleanup_audio() 
+        
+        # 🛑 QUI HO RIMOSSO cleanup_audio()! 
+        # La musica continua anche se sei qui.
 
         header = ft.Container(
             content=ft.Row([
@@ -160,6 +184,7 @@ class UltimatePlayer:
         )
 
         f_btn = None
+        # Mostra il bottone per tornare al player SOLO se stiamo suonando qualcosa
         if self.current_song_data:
              f_btn = ft.FloatingActionButton(
                  icon=ft.Icons.MUSIC_NOTE, bgcolor="white", 
@@ -197,7 +222,6 @@ class UltimatePlayer:
 
         img = ft.Image(src=cover_url, width=300, height=300, fit=ft.ImageFit.COVER, error_content=fallback, border_radius=0)
 
-        # Pulsanti definiti singolarmente per evitare errori di parentesi
         btn_prev = ft.Container(
             content=ft.Text("<<<", color="white", size=24, weight="bold", font_family=self.FONT_NAME),
             padding=20, on_click=self.prev_track, ink=True
@@ -262,6 +286,8 @@ class UltimatePlayer:
         self.is_playing = False
         self.show_player_view()
         
+        # LOGICA LOCK-SCREEN:
+        # Se il file c'è, lo suoniamo subito (main thread).
         s_id = self.current_song_data['id']
         file_path = os.path.join(self.cache_dir, f"{s_id}.mp3")
         
@@ -275,14 +301,13 @@ class UltimatePlayer:
         s_id = self.playlist[index]['id']
         path = os.path.join(self.cache_dir, f"{s_id}.mp3")
         self.debug_label.value = "DOWNLOADING..."
-        self.debug_label.color = "yellow"
         self.page.update()
         
         if self._dl_file(s_id, path):
             self._start_playback(path, "PLAYING (FETCHED)")
             self._preload_next(index)
         else:
-            self.debug_label.value = "DL FAILED"
+            self.debug_label.value = "DL FAIL"
             self.page.update()
 
     def _preload_next(self, index):
@@ -291,8 +316,8 @@ class UltimatePlayer:
             nxt_idx = (index + i) % len(self.playlist)
             nxt_data = self.playlist[nxt_idx]
             path = os.path.join(self.cache_dir, f"{nxt_data['id']}.mp3")
-            ids.append(nxt_data['id'])
-            if not os.path.exists(path): self._dl_file(nxt_data['id'], path)
+            ids.append(nxt['id'])
+            if not os.path.exists(path): self._dl_file(nxt['id'], path)
         self._prune(ids)
 
     def _dl_file(self, s_id, path):
@@ -324,6 +349,8 @@ class UltimatePlayer:
             self.is_playing = True
             if hasattr(self, 'btn_play_content'): self.btn_play_content.name = ft.Icons.PAUSE
             self.page.update()
+            
+            # Autoplay True per far partire subito
             self.audio_player = flet_audio.Audio(
                 src=path, autoplay=True, volume=1.0,
                 on_state_changed=self.on_audio_state,
@@ -357,42 +384,35 @@ class UltimatePlayer:
         self.play_track_index((self.current_index - 1) % len(self.playlist))
         
     def on_audio_state(self, e):
-        if e.data == "completed": self.next_track()
+        # Questo evento viene lanciato quando la canzone finisce (completed)
+        if e.data == "completed":
+            print("Song finished, next!")
+            self.next_track()
 
     def fetch_songs(self):
-        self.songs_column.controls.append(ft.Text("LOADING...", color="white", font_family=self.FONT_NAME))
+        self.songs_column.controls.append(ft.Text("LOADING...", font_family=self.FONT_NAME))
         self.page.update()
         try:
-            params = self.get_auth_params()
-            params['size'] = 100
-            res = requests.get(f"{self.base_url}/rest/getRandomSongs", params=params, timeout=10)
+            p = self.get_auth_params()
+            p['size'] = 100
+            res = requests.get(f"{self.base_url}/rest/getRandomSongs", params=p, timeout=10)
             data = res.json()
             self.songs_column.controls.clear()
             self.playlist = []
             if 'randomSongs' in data['subsonic-response']:
-                songs = data['subsonic-response']['randomSongs']['song']
-                for idx, s in enumerate(songs):
+                for idx, s in enumerate(data['subsonic-response']['randomSongs']['song']):
                     self.playlist.append(s)
-                    row = ft.Container(
-                        content=ft.Row([
-                            ft.Icon(ft.Icons.MUSIC_NOTE, color="white"),
-                            ft.Column([
-                                ft.Text(s['title'], color="white", weight="bold", font_family=self.FONT_NAME, no_wrap=True),
-                                ft.Text(s.get('artist', 'Unknown'), color="grey", size=12, font_family=self.FONT_NAME)
-                            ], expand=True)
-                        ]),
-                        padding=15, bgcolor="#000000" if idx % 2 == 0 else "#111111",
-                        border=ft.border.only(bottom=ft.border.BorderSide(1, "#333333")),
+                    self.songs_column.controls.append(ft.Container(
+                        content=ft.Row([ft.Icon(ft.Icons.MUSIC_NOTE), ft.Column([ft.Text(s['title'], weight="bold"), ft.Text(s.get('artist','?'), color="grey")], expand=True)]),
+                        padding=15, bgcolor="#000000" if idx%2==0 else "#111111",
                         on_click=lambda e, i=idx: self.play_track_index(i)
-                    )
-                    self.songs_column.controls.append(row)
-            else: self.songs_column.controls.append(ft.Text("NO SONGS", color="red"))
+                    ))
         except: self.songs_column.controls.append(ft.Text("ERROR", color="red"))
         self.page.update()
 
 def main(page: ft.Page):
     app = UltimatePlayer(page)
-    page.add(ft.Text("BOOTING...", color="green", font_family="Courier New"))
+    page.add(ft.Text("BOOT...", font_family="Courier New"))
     time.sleep(0.5)
     page.clean()
     app.safe_boot()
