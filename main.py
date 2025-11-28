@@ -5,12 +5,9 @@ import requests
 import flet as ft
 import flet_audio 
 import time
+import os
 import threading
-import base64
-import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
-from socketserver import ThreadingMixIn
-from urllib.parse import urlparse, parse_qs
+import glob
 
 # --- ⚠️ CONFIGURAZIONE ⚠️ ---
 IP_CASA = 'http://192.168.1.20:4533'   
@@ -18,77 +15,6 @@ IP_REMOTO = 'http://100.96.220.44:4533'
 USERNAME = 'Gino'
 PASSWORD = 'XRtKMoaoSroMC1yJ'             
 # ----------------------------
-
-# --- 🛡️ PROXY INTELLIGENTE (RANGE SUPPORT) 🛡️ ---
-PROXY_PORT = 54321
-
-class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
-    daemon_threads = True
-
-class StreamProxyHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args): return
-
-    def do_GET(self):
-        try:
-            parsed_path = urlparse(self.path)
-            query = parse_qs(parsed_path.query)
-            
-            if 'q' not in query:
-                self.send_error(400, "No Data")
-                return
-            
-            b64_url = query['q'][0]
-            real_url = base64.b64decode(b64_url).decode('utf-8')
-            
-            # --- INTELLIGENZA HEADER ---
-            # Copiamo la richiesta del telefono e la passiamo a Navidrome
-            headers_to_send = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'Accept': '*/*'
-            }
-            
-            # FONDAMENTALE: Se Android chiede un Range, lo passiamo!
-            if 'Range' in self.headers:
-                headers_to_send['Range'] = self.headers['Range']
-            
-            # Scarichiamo lo stream
-            with requests.get(real_url, headers=headers_to_send, stream=True, timeout=10) as r:
-                # Rispondiamo al telefono con lo stesso codice di Navidrome (200 o 206)
-                self.send_response(r.status_code)
-                
-                # Copiamo gli header vitali per Android
-                headers_to_keep = ['Content-Type', 'Content-Length', 'Content-Range', 'Accept-Ranges']
-                for key, value in r.headers.items():
-                    # Trova header case-insensitive
-                    for k in headers_to_keep:
-                        if key.lower() == k.lower():
-                            self.send_header(k, value)
-                            
-                self.end_headers()
-                
-                # Sputiamo i dati velocemente
-                for chunk in r.iter_content(chunk_size=32768):
-                    if chunk:
-                        try:
-                            self.wfile.write(chunk)
-                        except (BrokenPipeError, ConnectionResetError):
-                            # Android ha chiuso perché ha avuto abbastanza dati (normale per i Range)
-                            break 
-                        
-        except Exception as e:
-            pass
-
-def start_proxy_server():
-    try:
-        server = ThreadedHTTPServer(('127.0.0.1', PROXY_PORT), StreamProxyHandler)
-        print(f"PROXY STARTED ON {PROXY_PORT}")
-        server.serve_forever()
-    except Exception as e:
-        print(f"PROXY ERROR: {e}")
-
-threading.Thread(target=start_proxy_server, daemon=True).start()
-# --- FINE HACK ---
-
 
 class UltimatePlayer:
     def __init__(self, page: ft.Page):
@@ -100,6 +26,14 @@ class UltimatePlayer:
         self.audio_player = None 
         self.is_playing = False 
         self.last_click_time = 0 
+        
+        # CARTELLA TEMPORANEA SICURA
+        # Su Android usa la cache dell'app, che si pulisce da sola se serve spazio
+        self.cache_dir = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_music")
+        try:
+            if not os.path.exists(self.cache_dir):
+                os.makedirs(self.cache_dir)
+        except: pass
 
         self.COLOR_BG = "#000000"       
         self.COLOR_TEXT = "#FFFFFF"     
@@ -116,7 +50,7 @@ class UltimatePlayer:
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
         token = hashlib.md5((PASSWORD + salt).encode('utf-8')).hexdigest()
-        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'RangeClient', 'f': 'json'}
+        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'SafeDownloader', 'f': 'json'}
 
     # --- 1. SELEZIONE ---
     def show_selector(self):
@@ -184,7 +118,6 @@ class UltimatePlayer:
         if not self.current_song_data: return
         song = self.current_song_data
         
-        # Cover
         params = self.get_auth_params()
         params['id'] = song['id']
         params['size'] = 600
@@ -258,6 +191,7 @@ class UltimatePlayer:
             except: pass
             self.audio_player = None
 
+    # --- DOWNLOAD & PLAY (Storage Safe) ---
     def play_track_index(self, index):
         if index < 0 or index >= len(self.playlist): return
         
@@ -268,36 +202,63 @@ class UltimatePlayer:
 
         self.current_index = index
         self.current_song_data = self.playlist[index]
-        self.is_playing = True
+        self.is_playing = False
 
-        params = self.get_auth_params()
-        params['id'] = self.current_song_data['id']
-        real_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=192"
-        for k, v in params.items(): real_url += f"&{k}={v}"
-
-        b64_url = base64.b64encode(real_url.encode('utf-8')).decode('utf-8')
-        proxy_url = f"http://127.0.0.1:{PROXY_PORT}/stream.mp3?q={b64_url}"
-
-        self.debug_label.value = "BUFFERING (RANGE AWARE)..."
-        self.page.update()
-
-        self.audio_player = flet_audio.Audio(
-            src=proxy_url,
-            autoplay=True,
-            volume=1.0,
-            on_state_changed=self.on_audio_state,
-            on_position_changed=self.on_audio_position,
-            on_loaded=lambda _: self.on_loaded_ok()
-        )
-        
-        self.page.overlay.append(self.audio_player)
-        self.page.update()
         self.show_player_view()
+        threading.Thread(target=self._download_and_play, args=(self.current_song_data,), daemon=True).start()
 
-    def on_loaded_ok(self):
-        self.debug_label.value = "PLAYING (SUCCESS)"
-        self.debug_label.color = "#00FF00"
-        self.page.update()
+    def _download_and_play(self, song_data):
+        try:
+            self.debug_label.value = "DOWNLOADING (TEMP)..."
+            self.debug_label.color = "yellow"
+            self.page.update()
+
+            params = self.get_auth_params()
+            params['id'] = song_data['id']
+            url = f"{self.base_url}/rest/stream?id={song_data['id']}&format=mp3&maxBitRate=128"
+            for k, v in params.items(): url += f"&{k}={v}"
+
+            # --- PULIZIA SPAZIO ---
+            # Cancelliamo TUTTI i file mp3 vecchi nella cartella cache
+            # Questo garantisce che non si accumuli nulla.
+            try:
+                files = glob.glob(os.path.join(self.cache_dir, "*.mp3"))
+                for f in files:
+                    try: os.remove(f)
+                    except: pass # Se è in uso pazienza, lo cancelleremo alla prossima
+            except: pass
+
+            # Nome univoco per evitare conflitti
+            filename = f"track_{int(time.time())}.mp3"
+            file_path = os.path.join(self.cache_dir, filename)
+
+            with requests.get(url, stream=True, timeout=15) as r:
+                r.raise_for_status()
+                with open(file_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            
+            self.debug_label.value = "PLAYING (LOCAL)"
+            self.debug_label.color = "#00FF00"
+            self.is_playing = True
+            self.btn_play_content.name = ft.Icons.PAUSE
+            self.page.update()
+
+            self.audio_player = flet_audio.Audio(
+                src=file_path,
+                autoplay=True,
+                volume=1.0,
+                on_state_changed=self.on_audio_state,
+                on_position_changed=self.on_audio_position
+            )
+            
+            self.page.overlay.append(self.audio_player)
+            self.page.update()
+
+        except Exception as e:
+            self.debug_label.value = f"ERROR: {e}"
+            self.debug_label.color = "red"
+            self.page.update()
 
     def on_audio_position(self, e):
         sec = int(int(e.data) / 1000)
@@ -305,10 +266,7 @@ class UltimatePlayer:
         self.page.update()
 
     def toggle_play_pause(self, e):
-        if time.time() - self.last_click_time < 0.3: return 
-        self.last_click_time = time.time()
         if not self.audio_player: return
-        
         if self.is_playing:
             self.audio_player.pause()
             self.is_playing = False
