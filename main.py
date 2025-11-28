@@ -3,16 +3,15 @@ import random
 import string
 import requests
 import flet as ft
-import flet_audio
+import flet_audio 
 import time
 
 # --- ⚠️ CONFIGURAZIONE ⚠️ ---
-IP_CASA = 'http://ip tuo fisso'   
-IP_REMOTO = 'http://ip tuo remoto'    
-USERNAME = 'username tuo'
-PASSWORD = 'password tua'             
+IP_CASA = 'http://192.168.1.20:4533'   
+IP_REMOTO = 'http://100.96.220.44:4533'    
+USERNAME = 'Gino'
+PASSWORD = 'XRtKMoaoSroMC1yJ'             
 # ----------------------------
-#questo programma e' scritto da un ai e fa cagare, e' un test
 
 class UltimatePlayer:
     def __init__(self, page: ft.Page):
@@ -36,6 +35,9 @@ class UltimatePlayer:
         self.page.padding = 0
 
         self.songs_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
+        
+        # Etichetta di Debug per capire se l'audio parte
+        self.debug_label = ft.Text("DEBUG: READY", color="yellow", size=10, font_family=self.FONT_NAME)
 
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
@@ -171,7 +173,9 @@ class UltimatePlayer:
                     ft.Row([back_btn], alignment=ft.MainAxisAlignment.START),
                     ft.Container(height=20),
                     ft.Container(content=album_art, border=ft.border.all(4, "white"), padding=0),
-                    ft.Container(height=40),
+                    ft.Container(height=20),
+                    self.debug_label, # Mostra lo stato del buffer
+                    ft.Container(height=20),
                     ft.Text(song['title'], size=20, weight="bold", color="white", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
                     ft.Text(song.get('artist', 'Unknown'), size=14, color="grey", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
                     ft.Container(expand=True),
@@ -183,7 +187,7 @@ class UltimatePlayer:
         )
         self.page.update()
 
-    # --- 🛡️ CLEANUP AGGIORNATO 🛡️ ---
+    # --- 🛡️ CLEANUP 🛡️ ---
     def cleanup_audio(self):
         if self.audio_player:
             try:
@@ -194,7 +198,7 @@ class UltimatePlayer:
             except: pass
             self.audio_player = None
 
-    # --- LOGICA AUDIO NUOVA (flet_audio) ---
+    # --- LOGICA AUDIO FIXATA (Transcodifica MP3) ---
     def play_track_index(self, index):
         if index < 0 or index >= len(self.playlist): return
         
@@ -210,21 +214,43 @@ class UltimatePlayer:
 
         params = self.get_auth_params()
         params['id'] = self.current_song_data['id']
-        audio_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=320"
+        
+        # --- FIX FORMATO AUDIO ---
+        # 1. format=mp3: Obbliga Navidrome a convertire in MP3 (Android lo legge sempre)
+        # 2. maxBitRate=128: Mantiene il file leggero per evitare buffering
+        # 3. estimateContentLength=true: Aiuta il player a capire la durata
+        audio_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=192&estimateContentLength=true"
         for k, v in params.items(): audio_url += f"&{k}={v}"
 
-        # USARE LA NUOVA CLASSE flet_audio.Audio
+        self.debug_label.value = "STATUS: REQUESTING STREAM..."
+        self.page.update()
+
         self.audio_player = flet_audio.Audio(
             src=audio_url,
             autoplay=True,
             volume=1.0,
-            on_state_changed=self.on_audio_state
+            on_state_changed=self.on_audio_state,
+            on_position_changed=self.on_audio_position, # Debug tempo
+            on_loaded=lambda _: self.on_audio_loaded() # Debug caricamento
         )
         
         self.page.overlay.append(self.audio_player)
         self.page.update()
         
         self.show_player_view()
+
+    # --- DEBUG HELPERS ---
+    def on_audio_loaded(self):
+        self.debug_label.value = "STATUS: BUFFERED & PLAYING"
+        self.debug_label.color = "#00FF00"
+        self.page.update()
+
+    def on_audio_position(self, e):
+        # Se vedi i numeri scorrere, il file sta andando!
+        # Convertiamo millisecondi in secondi
+        sec = int(int(e.data) / 1000)
+        self.debug_label.value = f"PLAYING: {sec} sec"
+        self.page.update()
 
     def toggle_play_pause(self, e):
         current_time = time.time()
@@ -299,4 +325,3 @@ def main(page: ft.Page):
     app.show_selector()
 
 ft.app(target=main)
-
