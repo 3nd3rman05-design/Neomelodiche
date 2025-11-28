@@ -5,14 +5,66 @@ import requests
 import flet as ft
 import flet_audio 
 import time
+import threading
+import socket
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
 
 # --- ⚠️ CONFIGURAZIONE ⚠️ ---
-IP_CASA = 'http://IP casa'   
-IP_REMOTO = 'http://IP fuori'    
-USERNAME = 'username'
-PASSWORD = 'password'             
+IP_CASA = 'http://192.168.1.20:4533'   
+IP_REMOTO = 'http://100.96.220.44:4533'    
+USERNAME = 'Gino'
+PASSWORD = 'XRtKMoaoSroMC1yJ'             
 # ----------------------------
-#sta merda è fatta da un ai che dio cane sbaglia peggio di me 
+
+# --- 🛡️ HACK SERVER PROXY ---
+# Questo server gira DENTRO il telefono e fa da ponte per aggirare il blocco HTTP
+PROXY_PORT = 9999
+
+class StreamProxyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        # 1. Recuperiamo l'URL vero dai parametri
+        parsed_path = urlparse(self.path)
+        query = parse_qs(parsed_path.query)
+        
+        if 'url' not in query:
+            self.send_error(400, "Missing URL")
+            return
+            
+        real_url = query['url'][0]
+        
+        try:
+            # 2. Python scarica lo stream (Lui può farlo!)
+            # stream=True è fondamentale per non scaricare tutto subito
+            with requests.get(real_url, stream=True, timeout=10) as r:
+                # Copiamo gli header importanti (Content-Type, Length)
+                self.send_response(r.status_code)
+                for key, value in r.headers.items():
+                    if key.lower() in ['content-type', 'content-length', 'accept-ranges']:
+                        self.send_header(key, value)
+                self.end_headers()
+                
+                # 3. Passiamo i dati a pezzetti al Player Audio
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        self.wfile.write(chunk)
+                        
+        except Exception as e:
+            print(f"Proxy Error: {e}")
+
+def start_proxy_server():
+    try:
+        server = HTTPServer(('127.0.0.1', PROXY_PORT), StreamProxyHandler)
+        print(f"🔥 PROXY ATTIVO SU 127.0.0.1:{PROXY_PORT}")
+        server.serve_forever()
+    except Exception as e:
+        print(f"Errore Proxy: {e}")
+
+# Avviamo il proxy in un thread separato appena parte l'app
+threading.Thread(target=start_proxy_server, daemon=True).start()
+
+# --- FINE HACK ---
+
 
 class UltimatePlayer:
     def __init__(self, page: ft.Page):
@@ -36,14 +88,12 @@ class UltimatePlayer:
         self.page.padding = 0
 
         self.songs_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
-        
-        # Etichetta di Debug per capire se l'audio parte
-        self.debug_label = ft.Text("DEBUG: READY", color="yellow", size=10, font_family=self.FONT_NAME)
+        self.debug_label = ft.Text("SYSTEM READY", color="yellow", size=10, font_family=self.FONT_NAME)
 
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
         token = hashlib.md5((PASSWORD + salt).encode('utf-8')).hexdigest()
-        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'FinalClient', 'f': 'json'}
+        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'ProxyClient', 'f': 'json'}
 
     # --- 1. SELEZIONE ---
     def show_selector(self):
@@ -75,7 +125,7 @@ class UltimatePlayer:
             )
         )
 
-    # --- 2. LISTA CANZONI ---
+    # --- 2. LISTA ---
     def load_library_view(self, url):
         self.base_url = url
         self.page.clean()
@@ -93,8 +143,7 @@ class UltimatePlayer:
         floating_btn = None
         if self.current_song_data:
              floating_btn = ft.FloatingActionButton(
-                 icon=ft.Icons.MUSIC_NOTE, 
-                 bgcolor="white", 
+                 icon=ft.Icons.MUSIC_NOTE, bgcolor="white", 
                  content=ft.Icon(ft.Icons.MUSIC_NOTE, color="black"),
                  on_click=lambda _: self.show_player_view()
              )
@@ -107,7 +156,7 @@ class UltimatePlayer:
         if not self.playlist: self.fetch_songs()
         self.page.update()
 
-    # --- 3. PLAYER VIEW ---
+    # --- 3. PLAYER ---
     def show_player_view(self):
         self.page.clean()
         self.page.floating_action_button = None 
@@ -135,34 +184,25 @@ class UltimatePlayer:
             error_content=fallback_image, border_radius=0, 
         )
 
-        # Pulsanti
         btn_prev = ft.Container(
             content=ft.Text("<<<", color="white", size=24, weight="bold", font_family=self.FONT_NAME),
-            padding=20,
-            on_click=self.prev_track,
-            ink=True
+            padding=20, on_click=self.prev_track, ink=True
         )
 
         btn_next = ft.Container(
             content=ft.Text(">>>", color="white", size=24, weight="bold", font_family=self.FONT_NAME),
-            padding=20,
-            on_click=self.next_track,
-            ink=True
+            padding=20, on_click=self.next_track, ink=True
         )
 
         play_icon = ft.Icons.PAUSE if self.is_playing else ft.Icons.PLAY_ARROW
-        
         self.btn_play_content = ft.Icon(play_icon, color="white", size=40)
         
         btn_play = ft.Container(
             content=self.btn_play_content,
-            width=80, height=80,
-            bgcolor="black",
-            border=ft.border.all(3, "white"),
-            border_radius=40,
+            width=80, height=80, bgcolor="black",
+            border=ft.border.all(3, "white"), border_radius=40,
             alignment=ft.alignment.center,
-            on_click=self.toggle_play_pause,
-            ink=True
+            on_click=self.toggle_play_pause, ink=True
         )
 
         controls = ft.Row([btn_prev, btn_play, btn_next], alignment=ft.MainAxisAlignment.CENTER, spacing=30)
@@ -175,7 +215,7 @@ class UltimatePlayer:
                     ft.Container(height=20),
                     ft.Container(content=album_art, border=ft.border.all(4, "white"), padding=0),
                     ft.Container(height=20),
-                    self.debug_label, # Mostra lo stato del buffer
+                    self.debug_label,
                     ft.Container(height=20),
                     ft.Text(song['title'], size=20, weight="bold", color="white", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
                     ft.Text(song.get('artist', 'Unknown'), size=14, color="grey", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
@@ -188,7 +228,6 @@ class UltimatePlayer:
         )
         self.page.update()
 
-    # --- 🛡️ CLEANUP 🛡️ ---
     def cleanup_audio(self):
         if self.audio_player:
             try:
@@ -199,7 +238,7 @@ class UltimatePlayer:
             except: pass
             self.audio_player = None
 
-    # --- LOGICA AUDIO FIXATA (Transcodifica MP3) ---
+    # --- LOGICA AUDIO VIA PROXY ---
     def play_track_index(self, index):
         if index < 0 or index >= len(self.playlist): return
         
@@ -213,26 +252,28 @@ class UltimatePlayer:
         self.current_song_data = self.playlist[index]
         self.is_playing = True
 
+        # 1. Costruiamo l'URL vero (REMOTO)
         params = self.get_auth_params()
         params['id'] = self.current_song_data['id']
-        
-        # --- FIX FORMATO AUDIO ---
-        # 1. format=mp3: Obbliga Navidrome a convertire in MP3 (Android lo legge sempre)
-        # 2. maxBitRate=128: Mantiene il file leggero per evitare buffering
-        # 3. estimateContentLength=true: Aiuta il player a capire la durata
-        audio_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=192&estimateContentLength=true"
-        for k, v in params.items(): audio_url += f"&{k}={v}"
+        real_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=192"
+        for k, v in params.items(): real_url += f"&{k}={v}"
 
-        self.debug_label.value = "STATUS: REQUESTING STREAM..."
+        # 2. Convertiamo in URL PROXY (LOCALE)
+        # Il player si connetterà a 127.0.0.1 (che Android permette!)
+        # e chiederà al nostro script di scaricare 'real_url'
+        import urllib.parse
+        encoded_url = urllib.parse.quote(real_url)
+        proxy_url = f"http://127.0.0.1:{PROXY_PORT}/stream.mp3?url={encoded_url}"
+
+        self.debug_label.value = "STATUS: BYPASSING SECURITY..."
         self.page.update()
 
         self.audio_player = flet_audio.Audio(
-            src=audio_url,
+            src=proxy_url, # <--- QUI STA IL TRUCCO
             autoplay=True,
             volume=1.0,
             on_state_changed=self.on_audio_state,
-            on_position_changed=self.on_audio_position, # Debug tempo
-            on_loaded=lambda _: self.on_audio_loaded() # Debug caricamento
+            on_position_changed=self.on_audio_position
         )
         
         self.page.overlay.append(self.audio_player)
@@ -240,17 +281,9 @@ class UltimatePlayer:
         
         self.show_player_view()
 
-    # --- DEBUG HELPERS ---
-    def on_audio_loaded(self):
-        self.debug_label.value = "STATUS: BUFFERED & PLAYING"
-        self.debug_label.color = "#00FF00"
-        self.page.update()
-
     def on_audio_position(self, e):
-        # Se vedi i numeri scorrere, il file sta andando!
-        # Convertiamo millisecondi in secondi
         sec = int(int(e.data) / 1000)
-        self.debug_label.value = f"PLAYING: {sec} sec"
+        self.debug_label.value = f"PLAYING: {sec}s (PROXY ACTIVE)"
         self.page.update()
 
     def toggle_play_pause(self, e):
@@ -287,21 +320,17 @@ class UltimatePlayer:
     def fetch_songs(self):
         self.songs_column.controls.append(ft.Text("LOADING...", color="white", font_family=self.FONT_NAME))
         self.page.update()
-        
         try:
             params = self.get_auth_params()
             params['size'] = 100
             res = requests.get(f"{self.base_url}/rest/getRandomSongs", params=params, timeout=10)
             data = res.json()
-            
             self.songs_column.controls.clear()
             self.playlist = []
-            
             if 'randomSongs' in data['subsonic-response']:
                 songs = data['subsonic-response']['randomSongs']['song']
                 for idx, s in enumerate(songs):
                     self.playlist.append(s)
-                    
                     row = ft.Container(
                         content=ft.Row([
                             ft.Icon(ft.Icons.MUSIC_NOTE, color="white"),
@@ -316,9 +345,8 @@ class UltimatePlayer:
                         on_click=lambda e, i=idx: self.play_track_index(i)
                     )
                     self.songs_column.controls.append(row)
-        except Exception:
-            self.songs_column.controls.append(ft.Text("ERROR", color="red"))
-        
+            else: self.songs_column.controls.append(ft.Text("NO SONGS", color="red"))
+        except Exception: self.songs_column.controls.append(ft.Text("ERROR", color="red"))
         self.page.update()
 
 def main(page: ft.Page):
@@ -326,4 +354,3 @@ def main(page: ft.Page):
     app.show_selector()
 
 ft.app(target=main)
-
