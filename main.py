@@ -13,10 +13,10 @@ from socketserver import ThreadingMixIn
 from urllib.parse import urlparse, parse_qs
 
 # --- ⚠️ CONFIGURAZIONE ⚠️ ---
-IP_CASA = 'http://192.168.1.20:4533'   
-IP_REMOTO = 'http://100.96.220.44:4533'    
-USERNAME = 'Gino'
-PASSWORD = 'XRtKMoaoSroMC1yJ'             
+IP_CASA = 'http://..'   
+IP_REMOTO = 'http://..'    
+USERNAME = '...'
+PASSWORD = '...'             
 # ----------------------------
 
 # --- 🛡️ PROXY TURBO (FLUSH ATTIVO) 🛡️ ---
@@ -369,5 +369,6 @@ def main(page: ft.Page):
     app.show_selector()
 
 ft.app(target=main)
+
 
 
