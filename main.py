@@ -22,14 +22,12 @@ class UltimatePlayer:
         self.is_playing = False 
         self.last_click_time = 0 
         
-        # TIMER
-        self.track_duration = 0      
-        self.track_position = 0      
-        self.watchdog_running = True 
-        
-        # CACHE
+        # Cache Folder Setup
         self.cache_dir = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_buffer")
-        self._safe_wipe_cache()
+        if os.path.exists(self.cache_dir):
+            try: shutil.rmtree(self.cache_dir)
+            except: pass
+        os.makedirs(self.cache_dir, exist_ok=True)
 
         self.COLOR_BG = "#000000"       
         self.COLOR_TEXT = "#FFFFFF"     
@@ -41,37 +39,9 @@ class UltimatePlayer:
         self.page.padding = 0
 
         self.songs_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
-        self.time_label = ft.Text("--:-- / --:--", color="#00FF00", size=14, font_family=self.FONT_NAME, weight="bold")
+        self.debug_label = ft.Text("SYSTEM READY", color="grey", size=10, font_family=self.FONT_NAME)
+        
         self.config = {"ip_home": "", "ip_remote": "", "user": "", "pass": ""}
-
-        threading.Thread(target=self._manual_timer_loop, daemon=True).start()
-
-    def format_time(self, seconds):
-        if seconds < 0: return "00:00"
-        m, s = divmod(int(seconds), 60)
-        return f"{m:02d}:{s:02d}"
-
-    def _manual_timer_loop(self):
-        while self.watchdog_running:
-            time.sleep(1)
-            if self.is_playing and self.track_duration > 0:
-                self.track_position += 1
-                curr = self.format_time(self.track_position)
-                tot = self.format_time(self.track_duration)
-                try:
-                    self.time_label.value = f"{curr} / {tot}"
-                    self.page.update()
-                except: pass
-
-                # AUTO NEXT
-                if self.track_position >= (self.track_duration + 2):
-                    self.track_position = 0 
-                    self.track_duration = 0
-                    self.next_track_safe()
-
-    def next_track_safe(self):
-        try: self.next_track()
-        except: pass
 
     def safe_boot(self):
         try:
@@ -81,16 +51,6 @@ class UltimatePlayer:
             else:
                 self.show_setup_screen()
         except: self.show_setup_screen()
-
-    def _safe_wipe_cache(self):
-        if not os.path.exists(self.cache_dir):
-            os.makedirs(self.cache_dir, exist_ok=True)
-            return
-        try:
-            for f in glob.glob(os.path.join(self.cache_dir, "*")):
-                try: os.remove(f)
-                except: pass
-        except: pass
 
     def show_setup_screen(self):
         self.page.clean()
@@ -114,11 +74,11 @@ class UltimatePlayer:
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
         token = hashlib.md5((self.config["pass"] + salt).encode('utf-8')).hexdigest()
-        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'Navix', 'f': 'json'}
+        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'AudioFix', 'f': 'json'}
 
     def show_selector(self):
         self.page.clean()
-        self.kill_ghosts() 
+        self.kill_ghosts() # Pulizia totale al menu
         
         def rst(e): 
             self.page.client_storage.remove("navix_cfg")
@@ -137,10 +97,8 @@ class UltimatePlayer:
     def load_library_view(self, url):
         self.base_url = url
         self.page.clean()
+        # NESSUN KILL_GHOSTS QUI! La musica continua.
         
-        # ⚠️ NESSUN CLEANUP AUDIO QUI!
-        # Così la musica continua in background.
-
         header = ft.Container(content=ft.Row([ft.Icon(ft.Icons.STORAGE, color="white"), ft.Text("DATABASE", font_family=self.FONT_NAME)], alignment=ft.MainAxisAlignment.CENTER), bgcolor="#111111", padding=20)
         
         btn = None
@@ -182,108 +140,99 @@ class UltimatePlayer:
         self.page.add(ft.Container(content=ft.Column([
             ft.Row([ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _: self.load_library_view(self.base_url))]),
             ft.Container(height=20), ft.Container(content=img, border=ft.border.all(4, "white")),
-            ft.Container(height=20), self.time_label, ft.Container(height=20),
+            ft.Container(height=20), self.debug_label, ft.Container(height=20),
             ft.Text(self.current_song_data['title'], size=20, font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
             ft.Text(self.current_song_data.get('artist','?'), size=14, color="grey", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
             ft.Container(expand=True), controls, ft.Container(height=50)
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER), padding=20, expand=True))
         self.page.update()
 
-    # --- KILLER CHIRURGICO PER KEY ---
+    # --- KILLER GHOSTS (VERSIONE BRUTALE) ---
     def kill_ghosts(self):
-        # Cerca e distruggi SOLO l'oggetto con key="main_audio"
-        # Questo evita di cancellare cose a caso, ma rimuove sicuro il player vecchio
-        found = False
-        for control in self.page.overlay[:]:
-            if isinstance(control, flet_audio.Audio) or control.key == "main_audio":
-                try: 
-                    control.release()
-                    self.page.overlay.remove(control)
-                    found = True
+        # Rimuove TUTTI gli audio dall'overlay. Punto.
+        items_to_remove = []
+        for control in self.page.overlay:
+            if isinstance(control, flet_audio.Audio):
+                try: control.release()
                 except: pass
+                items_to_remove.append(control)
         
-        if found: self.page.update()
+        for item in items_to_remove:
+            self.page.overlay.remove(item)
+        
+        self.page.update()
         self.audio_player = None
 
     def play_track_index(self, index):
         if index < 0 or index >= len(self.playlist): return
+        
+        # Debounce
         if time.time() - self.last_click_time < 0.5: return 
         self.last_click_time = time.time()
 
-        # Uccidi il vecchio PRIMA di fare qualsiasi cosa
-        self.kill_ghosts() 
+        # KILL GHOSTS QUI: Prima di fare qualsiasi cosa, uccidi tutto.
+        self.kill_ghosts()
 
         self.current_index = index
         self.current_song_data = self.playlist[index]
-        self.is_playing = False 
-        
-        self.track_position = 0
-        try: self.track_duration = int(self.current_song_data.get("duration", 180))
-        except: self.track_duration = 180
-        
-        self.time_label.value = "LOADING..."
+        self.is_playing = False # Aspettiamo il download
+
         self.show_player_view()
         
-        s_id = self.current_song_data['id']
-        path = os.path.join(self.cache_dir, f"{s_id}.mp3")
-        
-        if os.path.exists(path) and os.path.getsize(path) > 1000:
-            self._start_playback(path)
-            threading.Thread(target=self._preload_next, args=(index,), daemon=True).start()
-        else:
-            threading.Thread(target=self._dl_manager, args=(index,), daemon=True).start()
+        # Download in thread separato
+        threading.Thread(target=self._download_and_play, args=(self.current_song_data,), daemon=True).start()
 
-    def _dl_manager(self, index):
-        s_id = self.playlist[index]['id']
-        path = os.path.join(self.cache_dir, f"{s_id}.mp3")
-        
-        if self._dl_file(s_id, path):
-            self._start_playback(path)
-            self._preload_next(index)
-        else:
-            self.time_label.value = "DL ERROR"
+    def _download_and_play(self, song_data):
+        try:
+            self.debug_label.value = "DOWNLOADING..."
+            self.debug_label.color = "yellow"
             self.page.update()
 
-    def _preload_next(self, index):
-        ids = [self.playlist[index]['id']]
-        for i in range(1, 4):
-            nxt_idx = (index + i) % len(self.playlist)
-            nxt = self.playlist[nxt_idx]
-            p = os.path.join(self.cache_dir, f"{nxt['id']}.mp3")
-            ids.append(nxt['id'])
-            if not os.path.exists(p): self._dl_file(nxt['id'], p)
-        
-        try:
-            for f in glob.glob(os.path.join(self.cache_dir, "*.mp3")):
-                if os.path.basename(f).replace(".mp3", "") not in ids:
+            params = self.get_auth_params()
+            params['id'] = song_data['id']
+            url = f"{self.base_url}/rest/stream?id={song_data['id']}&format=mp3&maxBitRate=128"
+            for k, v in params.items(): url += f"&{k}={v}"
+
+            # PULIZIA VECCHI MP3 (Lascia solo il corrente per non intasare)
+            try:
+                for f in glob.glob(os.path.join(self.cache_dir, "*.mp3")):
                     try: os.remove(f)
                     except: pass
-        except: pass
+            except: pass
 
-    def _dl_file(self, s_id, path):
-        try:
-            p = self.get_auth_params()
-            p['id'] = s_id
-            url = f"{self.base_url}/rest/stream?id={s_id}&format=mp3&maxBitRate=128"
-            for k, v in p.items(): url += f"&{k}={v}"
+            filename = f"track_{int(time.time())}.mp3"
+            file_path = os.path.join(self.cache_dir, filename)
+
             with requests.get(url, stream=True, timeout=15) as r:
                 r.raise_for_status()
-                with open(path+".tmp", 'wb') as f:
-                    for c in r.iter_content(8192): f.write(c)
-                os.rename(path+".tmp", path)
-            return True
-        except: return False
+                with open(file_path, 'wb') as f:
+                    for chunk in r.iter_content(chunk_size=8192):
+                        f.write(chunk)
+            
+            self._start_playback(file_path)
+
+        except Exception as e:
+            self.debug_label.value = "DL ERROR"
+            self.debug_label.color = "red"
+            self.page.update()
 
     def _start_playback(self, path):
+        # Questo gira nel thread, quindi usiamo try/catch per UI
         try:
+            self.debug_label.value = "PLAYING"
+            self.debug_label.color = "#00FF00"
             self.is_playing = True
             if hasattr(self, 'btn_play_icon'): self.btn_play_icon.name = ft.Icons.PAUSE
             self.page.update()
-            
-            # Key="main_audio" è la chiave per trovarlo e ucciderlo dopo
+
+            # Creiamo il player NUOVO DI ZECCA
             self.audio_player = flet_audio.Audio(
-                src=path, autoplay=True, volume=1.0, key="main_audio" 
+                src=path,
+                autoplay=True,
+                volume=1.0,
+                on_state_changed=self.on_audio_state
             )
+            
             self.page.overlay.append(self.audio_player)
             self.page.update()
         except: pass
@@ -306,6 +255,10 @@ class UltimatePlayer:
 
     def prev_track(self, e=None):
         self.play_track_index((self.current_index - 1) % len(self.playlist))
+        
+    def on_audio_state(self, e):
+        if e.data == "completed":
+            self.next_track()
 
     def fetch_songs(self):
         self.songs_column.controls.append(ft.Text("LOADING...", font_family=self.FONT_NAME))
