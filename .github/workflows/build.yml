@@ -1,4 +1,4 @@
-name: Build Flet APK (Time Machine)
+name: Build Flet APK (Modern)
 on:
   workflow_dispatch:
 
@@ -8,36 +8,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 1. Java 11 (Standard per build vecchie e stabili)
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '11'
+          java-version: '17'
 
-      # 2. Flutter 3.16.9 (L'ultima versione prima dei grandi cambiamenti)
-      # Questa versione è compatibile al 100% con Flet 0.24.1
       - uses: subosito/flutter-action@v2
         with:
           channel: 'stable'
-          flutter-version: '3.16.9'
+          flutter-version: '3.24.0' # Versione recente che supporta Flet 0.26
 
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 3. Installiamo Flet 0.24.1
       - name: Install Dependencies
         run: |
           pip install -U pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt # Ora include flet-audio!
 
-      # 4. Compilazione
-      # Usiamo il comando base, senza fronzoli che potrebbero causare errore 255
-      - name: Build APK
+      - name: Build APK with Flet
         run: |
-          flet build apk --verbose
+          flet build apk --project main.py --verbose
 
       - uses: actions/upload-artifact@v4
         with:
-          name: NaviX-Legacy-App
+          name: NaviX-Final-App
           path: build/apk/*.apk
