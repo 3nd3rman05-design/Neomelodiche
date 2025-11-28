@@ -20,6 +20,7 @@ PASSWORD = 'XRtKMoaoSroMC1yJ'
 class UltimatePlayer:
     def __init__(self, page: ft.Page):
         self.page = page
+        self.page.keep_screen_on = True # AIUTO EXTRA PER ANDROID
         self.base_url = ""
         self.playlist = []
         self.current_song_data = None
@@ -30,6 +31,7 @@ class UltimatePlayer:
         
         # CACHE
         self.cache_dir = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_buffer")
+        # Nuke on start per pulizia
         if os.path.exists(self.cache_dir):
             try: shutil.rmtree(self.cache_dir)
             except: pass
@@ -50,9 +52,9 @@ class UltimatePlayer:
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
         token = hashlib.md5((PASSWORD + salt).encode('utf-8')).hexdigest()
-        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'PersistentClient', 'f': 'json'}
+        return {'u': USERNAME, 't': token, 's': salt, 'v': '1.16.1', 'c': 'LockProof', 'f': 'json'}
 
-    # --- 1. SELEZIONE ---
+    # --- SELEZIONE ---
     def show_selector(self):
         self.page.clean()
         def make_btn(text, icon, color, url):
@@ -81,13 +83,11 @@ class UltimatePlayer:
             )
         )
 
-    # --- 2. LISTA ---
+    # --- LISTA ---
     def load_library_view(self, url):
         self.base_url = url
         self.page.clean()
-        
-        # ⚠️ FIX IMPORTANTE: HO RIMOSSO cleanup_audio() DA QUI!
-        # Ora la musica continua anche se torni alla lista.
+        # NOTA: Qui NON chiamiamo cleanup_audio(). La musica deve continuare.
 
         header = ft.Container(
             content=ft.Row([
@@ -103,7 +103,7 @@ class UltimatePlayer:
              floating_btn = ft.FloatingActionButton(
                  icon=ft.Icons.MUSIC_NOTE, bgcolor="white", 
                  content=ft.Icon(ft.Icons.MUSIC_NOTE, color="black"),
-                 on_click=lambda _: self.show_player_view() # Riapre il player
+                 on_click=lambda _: self.show_player_view()
              )
 
         self.page.add(
@@ -113,7 +113,7 @@ class UltimatePlayer:
         if not self.playlist: self.fetch_songs()
         self.page.update()
 
-    # --- 3. PLAYER ---
+    # --- PLAYER ---
     def show_player_view(self):
         self.page.clean()
         self.page.floating_action_button = None 
@@ -149,7 +149,7 @@ class UltimatePlayer:
             padding=20, on_click=self.next_track, ink=True
         )
 
-        # Icona corretta in base allo stato attuale
+        # FIX BUG 1: L'icona DEVE riflettere lo stato reale
         play_icon = ft.Icons.PAUSE if self.is_playing else ft.Icons.PLAY_ARROW
         self.btn_play_content = ft.Icon(play_icon, color="white", size=40)
         
@@ -185,7 +185,6 @@ class UltimatePlayer:
         self.page.update()
 
     def cleanup_audio(self):
-        # Questa funzione serve SOLO quando dobbiamo distruggere il player per metterne uno nuovo
         if self.audio_player:
             try:
                 self.audio_player.release()
@@ -195,61 +194,68 @@ class UltimatePlayer:
             except: pass
             self.audio_player = None
 
+    # --- LOGICA PLAYBACK BLINDATA ---
     def play_track_index(self, index):
         if index < 0 or index >= len(self.playlist): return
         
+        # Debounce
         if time.time() - self.last_click_time < 0.5: return 
         self.last_click_time = time.time()
 
-        self.cleanup_audio() # Qui va bene, perché stiamo cambiando canzone!
+        self.cleanup_audio() 
 
         self.current_index = index
         self.current_song_data = self.playlist[index]
-        self.is_playing = False
+        self.is_playing = False # Reset stato
 
         self.show_player_view()
-        threading.Thread(target=self._smart_manager, args=(index,), daemon=True).start()
+        
+        s_id = self.current_song_data['id']
+        file_path = os.path.join(self.cache_dir, f"{s_id}.mp3")
 
-    def _smart_manager(self, index):
+        # FIX BUG 2 (LOCK SCREEN):
+        # Se il file esiste, lo suoniamo DIRETTAMENTE nel main thread.
+        # Android non blocca il main thread per operazioni locali veloci.
+        # Creare un Thread separato (come prima) veniva bloccato da Android a schermo spento.
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
+            print("FAST PATH: Playing local file")
+            self._start_playback(file_path, "PLAYING (INSTANT)")
+            # Avviamo il preload della prossima canzone in background (se fallisce amen, ma la corrente suona)
+            threading.Thread(target=self._preload_next, args=(index,), daemon=True).start()
+        else:
+            # Se non c'è, dobbiamo scaricarlo. Qui usiamo il thread ma speriamo lo schermo sia acceso.
+            threading.Thread(target=self._download_and_play_manager, args=(index,), daemon=True).start()
+
+    def _download_and_play_manager(self, index):
         song_data = self.playlist[index]
         s_id = song_data['id']
-        current_file = os.path.join(self.cache_dir, f"{s_id}.mp3")
+        file_path = os.path.join(self.cache_dir, f"{s_id}.mp3")
         
-        if os.path.exists(current_file) and os.path.getsize(current_file) > 1000:
-            self._start_playback(current_file, "PLAYING (INSTANT)")
+        self.debug_label.value = "DOWNLOADING..."
+        self.debug_label.color = "yellow"
+        self.page.update()
+        
+        if self._download_file(s_id, file_path):
+            self._start_playback(file_path, "PLAYING (FETCHED)")
+            self._preload_next(index)
         else:
-            self.debug_label.value = "DOWNLOADING..."
-            self.debug_label.color = "yellow"
+            self.debug_label.value = "DOWNLOAD FAILED"
             self.page.update()
-            
-            if self._download_file(s_id, current_file):
-                self._start_playback(current_file, "PLAYING (FETCHED)")
-            else:
-                self.debug_label.value = "DOWNLOAD FAILED"
-                self.page.update()
-                return 
 
-        ids_to_keep = [s_id] 
-        for i in range(1, 4): 
+    def _preload_next(self, index):
+        # Scarica le prossime 3 canzoni e pulisce il resto
+        ids_to_keep = [self.playlist[index]['id']]
+        for i in range(1, 4):
             next_idx = (index + i) % len(self.playlist)
             next_data = self.playlist[next_idx]
-            next_id = next_data['id']
-            next_file = os.path.join(self.cache_dir, f"{next_id}.mp3")
-            ids_to_keep.append(next_id) 
-            if not os.path.exists(next_file):
-                print(f"Buffering: {next_data['title']}")
-                self._download_file(next_id, next_file)
+            next_path = os.path.join(self.cache_dir, f"{next_data['id']}.mp3")
+            ids_to_keep.append(next_data['id'])
+            
+            if not os.path.exists(next_path):
+                print(f"Preloading: {next_data['title']}")
+                self._download_file(next_data['id'], next_path)
+        
         self._prune_cache(ids_to_keep)
-
-    def _prune_cache(self, keep_ids):
-        try:
-            files = glob.glob(os.path.join(self.cache_dir, "*.mp3"))
-            for f in files:
-                fname = os.path.basename(f).replace(".mp3", "")
-                if fname not in keep_ids:
-                    try: os.remove(f)
-                    except: pass
-        except: pass
 
     def _download_file(self, s_id, path):
         try:
@@ -267,32 +273,43 @@ class UltimatePlayer:
                 os.rename(temp_path, path)
             return True
         except Exception as e:
-            print(f"DL Error: {e}")
             return False
 
-    def _start_playback(self, path, status_msg):
-        self.debug_label.value = status_msg
-        self.debug_label.color = "#00FF00"
-        self.is_playing = True
-        
-        # Safe UI update (perché siamo in un thread)
+    def _prune_cache(self, keep_ids):
         try:
-            self.btn_play_content.name = ft.Icons.PAUSE
-            self.page.update()
+            files = glob.glob(os.path.join(self.cache_dir, "*.mp3"))
+            for f in files:
+                fname = os.path.basename(f).replace(".mp3", "")
+                if fname not in keep_ids:
+                    try: os.remove(f)
+                    except: pass
         except: pass
 
-        self.audio_player = flet_audio.Audio(
-            src=path,
-            autoplay=True,
-            volume=1.0,
-            on_state_changed=self.on_audio_state,
-            on_position_changed=self.on_audio_position
-        )
-        self.page.overlay.append(self.audio_player)
-        self.page.update()
+    def _start_playback(self, path, status_msg):
+        # Questa funzione viene chiamata anche dai thread, quindi usiamo try/catch per UI
+        try:
+            self.debug_label.value = status_msg
+            self.debug_label.color = "#00FF00"
+            self.is_playing = True
+            if hasattr(self, 'btn_play_content'):
+                self.btn_play_content.name = ft.Icons.PAUSE
+            self.page.update()
+
+            self.audio_player = flet_audio.Audio(
+                src=path,
+                autoplay=True,
+                volume=1.0,
+                on_state_changed=self.on_audio_state,
+                on_position_changed=self.on_audio_position
+            )
+            self.page.overlay.append(self.audio_player)
+            self.page.update()
+        except Exception as e:
+            print(f"Playback Error: {e}")
 
     def on_audio_position(self, e):
         sec = int(int(e.data) / 1000)
+        # Aggiorniamo la UI solo ogni secondo per non intasare
         self.debug_label.value = f"PLAYING: {sec}s"
         self.page.update()
 
@@ -319,6 +336,9 @@ class UltimatePlayer:
         
     def on_audio_state(self, e):
         if e.data == "completed":
+            # Quando finisce, chiama la prossima.
+            # Poiché abbiamo il preload, play_track_index userà il "Fast Path" 
+            # e partirà anche se lo schermo è spento.
             self.next_track()
 
     def fetch_songs(self):
