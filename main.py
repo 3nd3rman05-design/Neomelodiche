@@ -6,9 +6,16 @@ import flet as ft
 import flet_audio 
 import time
 import os
-import threading
-import glob
 import shutil
+
+# --- 🔮 IL SIGILLO GLOBALE (SINGLETON) 🔮 ---
+# Questa variabile esiste al di fuori della classe. 
+# È l'unica entità audio permessa in tutto il programma.
+_GLOBAL_AUDIO_PLAYER = None
+
+# --- CONFIGURAZIONE ---
+# Percorsi e costanti
+CACHE_DIR = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_v3")
 
 class UltimatePlayer:
     def __init__(self, page: ft.Page):
@@ -18,19 +25,10 @@ class UltimatePlayer:
         self.playlist = []
         self.current_song_data = None
         self.current_index = -1
-        self.audio_player = None 
         self.is_playing = False 
         self.last_click_time = 0 
         
-        # TIMING SYSTEM
-        self.track_duration = 0      
-        self.track_position = 0      
-        self.watchdog_running = True 
-        
-        # CACHE SETUP
-        self.cache_dir = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_buffer")
-        self._safe_wipe_cache()
-
+        # Stile
         self.COLOR_BG = "#000000"       
         self.COLOR_TEXT = "#FFFFFF"     
         self.FONT_NAME = "Courier New"  
@@ -41,91 +39,130 @@ class UltimatePlayer:
         self.page.padding = 0
 
         self.songs_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
-        self.time_label = ft.Text("--:-- / --:--", color="#00FF00", size=14, font_family=self.FONT_NAME, weight="bold")
+        
+        # Init Cache
+        if os.path.exists(CACHE_DIR):
+            try: shutil.rmtree(CACHE_DIR)
+            except: pass
+        os.makedirs(CACHE_DIR, exist_ok=True)
+
+        # Config default
         self.config = {"ip_home": "", "ip_remote": "", "user": "", "pass": ""}
 
-        # Avvio Timer Manuale
-        threading.Thread(target=self._manual_timer_loop, daemon=True).start()
+    # --- DIAGNOSTICA AVANZATA (Errori Precisi) ---
+    def check_connection(self, url, user, pwd):
+        """Interroga il server come fanno i client veri (Ping)"""
+        try:
+            salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
+            token = hashlib.md5((pwd + salt).encode('utf-8')).hexdigest()
+            params = {'u': user, 't': token, 's': salt, 'v': '1.16.1', 'c': 'Check', 'f': 'json'}
+            
+            # Testiamo il ping
+            res = requests.get(f"{url}/rest/ping.view", params=params, timeout=5)
+            
+            if res.status_code == 200:
+                data = res.json()
+                if 'subsonic-response' in data:
+                    resp = data['subsonic-response']
+                    if resp['status'] == 'ok':
+                        return "OK", None
+                    else:
+                        # Errore logico (es. versione API vecchia)
+                        return "API ERROR", str(resp.get('error', {}).get('message', 'Unknown API Error'))
+            
+            # Errori HTTP standard
+            if res.status_code == 401: return "AUTH FAILED", "Wrong Username or Password"
+            if res.status_code == 403: return "FORBIDDEN", "User not allowed"
+            if res.status_code == 404: return "NOT FOUND", "Check URL (remove /index.html?)"
+            return "HTTP ERROR", f"Code: {res.status_code}"
 
-    # --- FORMATTAZIONE TEMPO ---
-    def format_time(self, seconds):
-        if seconds < 0: return "00:00"
-        m, s = divmod(int(seconds), 60)
-        return f"{m:02d}:{s:02d}"
-
-    # --- WATCHDOG (Cronometro per Lock Screen) ---
-    def _manual_timer_loop(self):
-        while self.watchdog_running:
-            time.sleep(1)
-            if self.is_playing and self.track_duration > 0:
-                self.track_position += 1
-                curr = self.format_time(self.track_position)
-                tot = self.format_time(self.track_duration)
-                try:
-                    self.time_label.value = f"{curr} / {tot}"
-                    self.page.update()
-                except: pass
-
-                # AUTO NEXT (+2 sec buffer)
-                if self.track_position >= (self.track_duration + 2):
-                    self.track_position = 0 
-                    self.track_duration = 0
-                    self.next_track_safe()
-
-    def next_track_safe(self):
-        try: self.next_track()
-        except: pass
+        except requests.exceptions.ConnectionError:
+            return "NET ERROR", "Server unreachable (Check IP/VPN)"
+        except requests.exceptions.Timeout:
+            return "TIMEOUT", "Server too slow (Check signal)"
+        except Exception as e:
+            return "CRITICAL", str(e)
 
     # --- BOOT ---
     def safe_boot(self):
         try:
             if self.page.client_storage.contains_key("navix_cfg"):
                 self.config = self.page.client_storage.get("navix_cfg")
-                self.show_selector()
+                if not self.config.get("ip_home"): self.show_setup_screen()
+                else: self.show_selector()
             else:
                 self.show_setup_screen()
         except: self.show_setup_screen()
 
-    def _safe_wipe_cache(self):
-        if not os.path.exists(self.cache_dir):
-            os.makedirs(self.cache_dir, exist_ok=True)
-            return
-        try:
-            for f in glob.glob(os.path.join(self.cache_dir, "*")):
-                try: os.remove(f)
-                except: pass
-        except: pass
-
-    def show_setup_screen(self):
+    # --- SETUP SCREEN (Con Diagnostica) ---
+    def show_setup_screen(self, error_msg=None):
         self.page.clean()
         style = ft.TextStyle(font_family=self.FONT_NAME)
-        t_ip_h = ft.TextField(label="HOME IP", value="http://192.168.1.20:4533", text_style=style)
-        t_ip_r = ft.TextField(label="REMOTE IP", value="http://100.", text_style=style)
-        t_u = ft.TextField(label="USER", value="admin", text_style=style)
+        
+        # Valori precaricati o default
+        val_h = self.config.get("ip_home", "http://192.168.1.20:4533")
+        val_r = self.config.get("ip_remote", "http://100.")
+        val_u = self.config.get("user", "admin")
+        
+        t_ip_h = ft.TextField(label="HOME IP", value=val_h, text_style=style, border_color="green")
+        t_ip_r = ft.TextField(label="REMOTE IP", value=val_r, text_style=style, border_color="red")
+        t_u = ft.TextField(label="USER", value=val_u, text_style=style)
         t_p = ft.TextField(label="PASS", password=True, can_reveal_password=True, text_style=style)
         
-        def save(e):
-            if not t_ip_h.value: return
-            self.config = {"ip_home": t_ip_h.value.strip(), "ip_remote": t_ip_r.value.strip(), "user": t_u.value.strip(), "pass": t_p.value.strip()}
-            self.page.client_storage.set("navix_cfg", self.config)
-            self.show_selector()
+        lbl_err = ft.Text(error_msg, color="red", weight="bold") if error_msg else ft.Container()
+
+        def try_connect(e):
+            # Pulizia stringhe
+            home = t_ip_h.value.strip().rstrip("/")
+            remote = t_ip_r.value.strip().rstrip("/")
+            user = t_u.value.strip()
+            pwd = t_p.value.strip()
+
+            if not home or not user:
+                lbl_err.value = "FIELDS REQUIRED"
+                self.page.update()
+                return
+
+            # Testiamo la connessione PRIMA di salvare
+            lbl_err.value = "TESTING CONNECTION..."
+            lbl_err.color = "yellow"
+            self.page.update()
+
+            # Proviamo prima l'IP Home, se fallisce proviamo Remote (se inserito)
+            status, msg = self.check_connection(home, user, pwd)
+            
+            if status != "OK" and remote and "http" in remote:
+                 # Se Home fallisce, prova Remote
+                 status, msg = self.check_connection(remote, user, pwd)
+
+            if status == "OK":
+                self.config = {"ip_home": home, "ip_remote": remote, "user": user, "pass": pwd}
+                self.page.client_storage.set("navix_cfg", self.config)
+                self.show_selector()
+            else:
+                lbl_err.value = f"{status}: {msg}"
+                lbl_err.color = "red"
+                self.page.update()
 
         self.page.add(ft.Container(content=ft.Column([
-            ft.Text("SETUP", size=24, font_family=self.FONT_NAME), t_ip_h, t_ip_r, t_u, t_p,
-            ft.ElevatedButton("SAVE", on_click=save)
+            ft.Text("/// SETUP ///", size=24, color="white", font_family=self.FONT_NAME),
+            ft.Container(height=20),
+            lbl_err,
+            t_ip_h, t_ip_r, t_u, t_p,
+            ft.ElevatedButton("TEST & SAVE", on_click=try_connect, bgcolor="white", color="black")
         ]), padding=30, alignment=ft.alignment.center, expand=True))
 
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
         token = hashlib.md5((self.config["pass"] + salt).encode('utf-8')).hexdigest()
-        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'SeamlessApp', 'f': 'json'}
+        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'FinalApp', 'f': 'json'}
 
+    # --- SELEZIONE ---
     def show_selector(self):
         self.page.clean()
-        self.is_playing = False
-        self.kill_ghosts() 
+        self.terminate_audio_session() # Uccidi tutto se torni qui
         
-        def rst(e): 
+        def reset(e): 
             self.page.client_storage.remove("navix_cfg")
             self.show_setup_screen()
         def mk(t, i, c, u):
@@ -133,28 +170,19 @@ class UltimatePlayer:
                 bgcolor=c, width=180, height=140, border=ft.border.all(4, "white"), on_click=lambda _: self.load_library_view(u))
 
         self.page.add(ft.Container(content=ft.Column([
-            ft.Row([ft.IconButton(ft.Icons.SETTINGS, icon_color="grey", on_click=rst)], alignment=ft.MainAxisAlignment.END),
+            ft.Row([ft.IconButton(ft.Icons.SETTINGS, icon_color="grey", on_click=reset)], alignment=ft.MainAxisAlignment.END),
             ft.Text("SYSTEM BOOT", size=24, font_family=self.FONT_NAME), ft.Container(height=40),
             mk("LOCAL", ft.Icons.HOME, "#00FF00", self.config["ip_home"]), ft.Container(height=20),
             mk("VPN", ft.Icons.PUBLIC, "#FF0000", self.config["ip_remote"])
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER), alignment=ft.alignment.center, expand=True))
 
+    # --- LISTA ---
     def load_library_view(self, url):
         self.base_url = url
         self.page.clean()
         
-        # --- UI TWEAK: SCRITTA ABBASSATA ---
-        # Aggiunto padding TOP: 35 invece di 20
-        header = ft.Container(
-            content=ft.Row([
-                ft.Icon(ft.Icons.STORAGE, color="white", size=20),
-                ft.Text("DATABASE", color="white", font_family=self.FONT_NAME, size=16, weight="bold")
-            ], alignment=ft.MainAxisAlignment.CENTER),
-            bgcolor="#111111", 
-            padding=ft.padding.only(top=35, bottom=20, left=20, right=20), # <--- MODIFICA QUI
-            border=ft.border.only(bottom=ft.border.BorderSide(2, "white"))
-        )
-
+        header = ft.Container(content=ft.Row([ft.Icon(ft.Icons.STORAGE, color="white"), ft.Text("DATABASE", font_family=self.FONT_NAME)], alignment=ft.MainAxisAlignment.CENTER), bgcolor="#111111", padding=20)
+        
         btn = None
         if self.current_song_data:
              btn = ft.FloatingActionButton(
@@ -168,6 +196,7 @@ class UltimatePlayer:
         if not self.playlist: self.fetch_songs()
         self.page.update()
 
+    # --- PLAYER VIEW ---
     def show_player_view(self):
         self.page.clean()
         self.page.floating_action_button = None 
@@ -194,130 +223,111 @@ class UltimatePlayer:
         self.page.add(ft.Container(content=ft.Column([
             ft.Row([ft.IconButton(ft.Icons.ARROW_BACK, on_click=lambda _: self.load_library_view(self.base_url))]),
             ft.Container(height=20), ft.Container(content=img, border=ft.border.all(4, "white")),
-            ft.Container(height=20), self.time_label, ft.Container(height=20),
+            ft.Container(height=20),
             ft.Text(self.current_song_data['title'], size=20, font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
             ft.Text(self.current_song_data.get('artist','?'), size=14, color="grey", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
             ft.Container(expand=True), controls, ft.Container(height=50)
         ], horizontal_alignment=ft.CrossAxisAlignment.CENTER), padding=20, expand=True))
         self.page.update()
 
-    def kill_ghosts(self):
-        if self.audio_player:
+    # --- 🛑 GESTIONE AUDIO SINGLETON (NO GHOSTS) 🛑 ---
+    def terminate_audio_session(self):
+        """Uccide l'unico player globale esistente."""
+        global _GLOBAL_AUDIO_PLAYER
+        if _GLOBAL_AUDIO_PLAYER:
             try:
-                self.audio_player.release()
-                if self.audio_player in self.page.overlay:
-                    self.page.overlay.remove(self.audio_player)
+                _GLOBAL_AUDIO_PLAYER.release()
+                if _GLOBAL_AUDIO_PLAYER in self.page.overlay:
+                    self.page.overlay.remove(_GLOBAL_AUDIO_PLAYER)
+                self.page.update()
             except: pass
-            self.audio_player = None
+            _GLOBAL_AUDIO_PLAYER = None
 
     def play_track_index(self, index):
         if index < 0 or index >= len(self.playlist): return
+        
+        # Debounce
         if time.time() - self.last_click_time < 0.5: return 
         self.last_click_time = time.time()
 
-        self.kill_ghosts() # STOP VECCHIO
+        # 1. STOP & KILL (Brutale ma necessario per i fantasmi)
+        self.terminate_audio_session()
 
         self.current_index = index
         self.current_song_data = self.playlist[index]
-        self.is_playing = False
-        
-        # Reset Timer
-        self.track_position = 0
-        try: self.track_duration = int(self.current_song_data.get("duration", 180))
-        except: self.track_duration = 180
-        
-        self.time_label.value = "LOADING..."
+        self.is_playing = False # Aspettiamo il buffer
         self.show_player_view()
         
-        # CHECK CACHE
-        s_id = self.current_song_data['id']
-        path = os.path.join(self.cache_dir, f"{s_id}.mp3")
-        
-        if os.path.exists(path) and os.path.getsize(path) > 1000:
-            # FAST PATH: File esiste -> Play Istantaneo
-            self._start_playback(path)
-            # Preload Next in background
-            threading.Thread(target=self._preload_next, args=(index,), daemon=True).start()
-        else:
-            # SLOW PATH: Download -> Play -> Preload Next
-            threading.Thread(target=self._download_manager, args=(index,), daemon=True).start()
+        # 2. Avvia download nel thread
+        threading.Thread(target=self._download_and_play, args=(self.current_song_data,), daemon=True).start()
 
-    def _download_manager(self, index):
-        s_id = self.playlist[index]['id']
-        path = os.path.join(self.cache_dir, f"{s_id}.mp3")
-        
-        if self._dl_file(s_id, path):
-            self._start_playback(path)
-            self._preload_next(index) # Scarica la successiva ORA
-        else:
-            self.time_label.value = "DL ERROR"
-            self.page.update()
+    def _download_and_play(self, song_data):
+        try:
+            params = self.get_auth_params()
+            params['id'] = song_data['id']
+            # MP3 128k = Compatibilità massima Android
+            url = f"{self.base_url}/rest/stream?id={song_data['id']}&format=mp3&maxBitRate=128"
+            for k, v in params.items(): url += f"&{k}={v}"
 
-    def _preload_next(self, index):
-        # Scarica la prossima canzone mentre ascolti la corrente
-        next_idx = (index + 1) % len(self.playlist)
-        nxt = self.playlist[next_idx]
-        p = os.path.join(self.cache_dir, f"{nxt['id']}.mp3")
-        
-        if not os.path.exists(p): 
-            print(f"Preloading: {nxt['title']}")
-            self._dl_file(nxt['id'], p)
+            # Scarica
+            file_path = os.path.join(CACHE_DIR, f"{song_data['id']}.mp3")
             
-        # Cleanup file vecchi (tieni solo corrente e prossima)
-        keep = [self.playlist[index]['id'], nxt['id']]
-        self._prune(keep)
+            # Se non esiste, scarica. Se esiste ed è valido, usa.
+            if not (os.path.exists(file_path) and os.path.getsize(file_path) > 1000):
+                with requests.get(url, stream=True, timeout=15) as r:
+                    r.raise_for_status()
+                    with open(file_path, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+            
+            # Suona
+            self._start_playback(file_path)
 
-    def _dl_file(self, s_id, path):
-        try:
-            p = self.get_auth_params()
-            p['id'] = s_id
-            url = f"{self.base_url}/rest/stream?id={s_id}&format=mp3&maxBitRate=128"
-            for k, v in p.items(): url += f"&{k}={v}"
-            with requests.get(url, stream=True, timeout=15) as r:
-                r.raise_for_status()
-                with open(path+".tmp", 'wb') as f:
-                    for c in r.iter_content(8192): f.write(c)
-                os.rename(path+".tmp", path)
-            return True
-        except: return False
-
-    def _prune(self, ids):
-        try:
-            for f in glob.glob(os.path.join(self.cache_dir, "*.mp3")):
-                if os.path.basename(f).replace(".mp3", "") not in ids:
-                    try: os.remove(f)
-                    except: pass
-        except: pass
+        except Exception as e:
+            print(f"Play Error: {e}")
 
     def _start_playback(self, path):
+        global _GLOBAL_AUDIO_PLAYER
         try:
             self.is_playing = True
             if hasattr(self, 'btn_play_icon'): self.btn_play_icon.name = ft.Icons.PAUSE
             self.page.update()
-            
-            self.audio_player = flet_audio.Audio(src=path, autoplay=True, volume=1.0)
-            self.page.overlay.append(self.audio_player)
+
+            # CREAZIONE DELL'UNICO PLAYER PERMESSO
+            _GLOBAL_AUDIO_PLAYER = flet_audio.Audio(
+                src=path,
+                autoplay=True,
+                volume=1.0,
+                on_state_changed=self.on_audio_state
+            )
+            self.page.overlay.append(_GLOBAL_AUDIO_PLAYER)
             self.page.update()
         except: pass
 
     def toggle_play_pause(self, e):
-        if not self.audio_player: return
+        global _GLOBAL_AUDIO_PLAYER
+        if not _GLOBAL_AUDIO_PLAYER: return
+        
         if self.is_playing:
-            self.audio_player.pause()
+            _GLOBAL_AUDIO_PLAYER.pause()
             self.is_playing = False
             self.btn_play_icon.name = ft.Icons.PLAY_ARROW
         else:
-            self.audio_player.resume()
+            _GLOBAL_AUDIO_PLAYER.resume()
             self.is_playing = True
             self.btn_play_icon.name = ft.Icons.PAUSE
         self.page.update()
-        self.audio_player.update()
+        _GLOBAL_AUDIO_PLAYER.update()
 
     def next_track(self, e=None):
         self.play_track_index((self.current_index + 1) % len(self.playlist))
 
     def prev_track(self, e=None):
         self.play_track_index((self.current_index - 1) % len(self.playlist))
+        
+    def on_audio_state(self, e):
+        if e.data == "completed":
+            self.next_track()
 
     def fetch_songs(self):
         self.songs_column.controls.append(ft.Text("LOADING...", font_family=self.FONT_NAME))
