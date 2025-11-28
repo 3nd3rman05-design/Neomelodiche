@@ -9,24 +9,8 @@ import os
 import shutil
 import threading
 
-# --- 🎵 GESTIONE AUDIO GLOBALE (SINGLETON) ---
-# Questa variabile è l'unica autorità audio dell'app.
-_GLOBAL_PLAYER = None
-
-def kill_global_audio(page):
-    """Termina brutalmente qualsiasi audio attivo."""
-    global _GLOBAL_PLAYER
-    if _GLOBAL_PLAYER:
-        try:
-            _GLOBAL_PLAYER.release()
-            if _GLOBAL_PLAYER in page.overlay:
-                page.overlay.remove(_GLOBAL_PLAYER)
-            page.update()
-        except: pass
-        _GLOBAL_PLAYER = None
-
-# --- CONFIGURAZIONE ---
-CACHE_DIR = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_v4")
+# --- CONFIGURAZIONE E CACHE ---
+CACHE_DIR = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_v5")
 
 class UltimatePlayer:
     def __init__(self, page: ft.Page):
@@ -38,8 +22,20 @@ class UltimatePlayer:
         self.current_index = -1
         self.is_playing = False 
         
+        # --- AUDIO PLAYER UNICO (PERSISTENTE) ---
+        # Lo creiamo una volta sola e non lo distruggiamo mai.
+        self.audio_player = flet_audio.Audio(
+            autoplay=False, # Gestiamo noi il play
+            volume=1.0,
+            on_state_changed=self.on_audio_state,
+            on_position_changed=self.on_audio_position
+        )
+        # Lo aggiungiamo subito all'overlay
+        self.page.overlay.append(self.audio_player)
+        
         # Stile
         self.COLOR_BG = "#000000"       
+        self.COLOR_TEXT = "#FFFFFF"     
         self.FONT_NAME = "Courier New"  
         
         self.page.title = "NAVI-X PRO"
@@ -47,7 +43,7 @@ class UltimatePlayer:
         self.page.bgcolor = self.COLOR_BG
         self.page.padding = 0
 
-        # Setup Cache
+        # Setup Cache Pulita
         if os.path.exists(CACHE_DIR):
             try: shutil.rmtree(CACHE_DIR)
             except: pass
@@ -55,6 +51,10 @@ class UltimatePlayer:
 
         self.songs_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
         self.config = {"ip_home": "", "ip_remote": "", "user": "", "pass": ""}
+        
+        # Elementi UI Riusabili
+        self.time_label = ft.Text("--:--", color="green", font_family=self.FONT_NAME)
+        self.btn_play_icon = ft.Icon(ft.Icons.PLAY_ARROW, color="white", size=40)
 
         # Boot
         self.safe_boot()
@@ -69,38 +69,34 @@ class UltimatePlayer:
                 self.show_setup_screen()
         except: self.show_setup_screen()
 
-    # --- HELPER UTILI ---
-    def get_auth_params(self):
-        salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
-        token = hashlib.md5((self.config["pass"] + salt).encode('utf-8')).hexdigest()
-        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'FinalFix', 'f': 'json'}
-
-    # --- 1. SETUP ---
+    # --- SETUP SCREEN (AUTO-HTTP) ---
     def show_setup_screen(self, error=None):
         self.page.clean()
         st = ft.TextStyle(font_family=self.FONT_NAME)
         
-        # Pre-fill
-        h = self.config.get("ip_home", "http://192.168.1.20:4533")
-        r = self.config.get("ip_remote", "http://100.")
-        u = self.config.get("user", "admin")
+        val_h = self.config.get("ip_home", "192.168.1.20:4533") # Esempio senza http
+        val_r = self.config.get("ip_remote", "100.x.y.z:4533")
+        val_u = self.config.get("user", "admin")
         
-        t_h = ft.TextField(label="HOME IP", value=h, text_style=st, border_color="green")
-        t_r = ft.TextField(label="REMOTE IP", value=r, text_style=st, border_color="red")
-        t_u = ft.TextField(label="USER", value=u, text_style=st)
+        t_h = ft.TextField(label="HOME IP", value=val_h, text_style=st, border_color="green", hint_text="192.168.1.x:4533")
+        t_r = ft.TextField(label="REMOTE IP", value=val_r, text_style=st, border_color="red", hint_text="100.x.y.z:4533")
+        t_u = ft.TextField(label="USER", value=val_u, text_style=st)
         t_p = ft.TextField(label="PASS", password=True, can_reveal_password=True, text_style=st)
         err_lbl = ft.Text(error if error else "", color="red")
 
         def save(e):
-            # Test veloce connessione
+            # LOGICA AUTO-HTTP
+            h_raw = t_h.value.strip().rstrip("/")
+            r_raw = t_r.value.strip().rstrip("/")
+            
+            # Se non inizia con http, lo aggiungiamo noi
+            if h_raw and not h_raw.startswith("http"): h_raw = "http://" + h_raw
+            if r_raw and not r_raw.startswith("http"): r_raw = "http://" + r_raw
+
             try:
-                base = t_h.value.strip().rstrip("/")
-                test_p = {'u': t_u.value, 'p': t_p.value, 'v': '1.16.1', 'c': 'Test', 'f': 'json'}
-                # Non usiamo requests qui per non bloccare, salviamo e basta. 
-                # L'errore apparirà dopo se non va.
                 self.config = {
-                    "ip_home": base,
-                    "ip_remote": t_r.value.strip().rstrip("/"),
+                    "ip_home": h_raw,
+                    "ip_remote": r_raw,
                     "user": t_u.value.strip(),
                     "pass": t_p.value.strip()
                 }
@@ -116,14 +112,23 @@ class UltimatePlayer:
                 err_lbl, t_h, t_r, t_u, t_p,
                 ft.ElevatedButton("SAVE CONFIG", on_click=save)
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-            padding=ft.padding.only(top=50, left=30, right=30), # Padding alto
+            padding=ft.padding.only(top=50, left=30, right=30),
             alignment=ft.alignment.center, expand=True
         ))
 
-    # --- 2. SELEZIONE ---
+    def get_auth_params(self):
+        salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
+        token = hashlib.md5((self.config["pass"] + salt).encode('utf-8')).hexdigest()
+        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'SinglePlayer', 'f': 'json'}
+
+    # --- SELEZIONE ---
     def show_selector(self):
         self.page.clean()
-        kill_global_audio(self.page) # Stop musica se torni qui
+        
+        # FERMA L'AUDIO SE TORNU AL MENU (Opzionale, per pulizia)
+        if self.audio_player:
+            self.audio_player.pause()
+            self.is_playing = False
         
         def rst(e): 
             self.page.client_storage.remove("navix_cfg")
@@ -143,28 +148,25 @@ class UltimatePlayer:
                 mk("LOCAL", ft.Icons.HOME, "#00FF00", self.config["ip_home"]), ft.Container(height=20),
                 mk("VPN", ft.Icons.PUBLIC, "#FF0000", self.config["ip_remote"])
             ], horizontal_alignment=ft.CrossAxisAlignment.CENTER), 
-            padding=ft.padding.only(top=50), # Padding alto per il notch
+            padding=ft.padding.only(top=50), 
             alignment=ft.alignment.center, expand=True
         ))
 
-    # --- 3. LISTA ---
+    # --- LISTA ---
     def load_library_view(self, url):
         self.base_url = url
         self.page.clean()
         
-        # Header con margine alto per il "2mm" request
         header = ft.Container(
             content=ft.Row([
                 ft.Icon(ft.Icons.STORAGE, color="white"), 
                 ft.Text("DATABASE", font_family=self.FONT_NAME, size=20, weight="bold")
             ], alignment=ft.MainAxisAlignment.CENTER),
             bgcolor="#111111", 
-            # ⚠️ QUI ABBIAMO ABBASSATO L'INTERFACCIA (50px = ~2-3mm + notch)
             padding=ft.padding.only(top=50, bottom=20, left=20, right=20), 
             border=ft.border.only(bottom=ft.border.BorderSide(2, "white"))
         )
         
-        # Bottone "Now Playing" se c'è musica
         fab = None
         if self.current_song_data:
              fab = ft.FloatingActionButton(
@@ -178,13 +180,12 @@ class UltimatePlayer:
         if not self.playlist: self.fetch_songs()
         self.page.update()
 
-    # --- 4. PLAYER ---
+    # --- PLAYER UI ---
     def show_player_view(self):
         self.page.clean()
         self.page.floating_action_button = None 
         if not self.current_song_data: return
         
-        # Cover
         try:
             p = self.get_auth_params()
             p['id'] = self.current_song_data['id']
@@ -195,7 +196,8 @@ class UltimatePlayer:
 
         img = ft.Image(src=cover_url, width=300, height=300, fit=ft.ImageFit.COVER, error_content=ft.Container(bgcolor="#333"), border_radius=0)
         
-        self.btn_play_icon = ft.Icon(ft.Icons.PAUSE if self.is_playing else ft.Icons.PLAY_ARROW, color="white", size=40)
+        # Aggiorna icona in base allo stato
+        self.btn_play_icon.name = ft.Icons.PAUSE if self.is_playing else ft.Icons.PLAY_ARROW
         
         controls = ft.Row([
             ft.Container(content=ft.Text("<<<", size=24, weight="bold", font_family=self.FONT_NAME), padding=20, on_click=self.prev_track),
@@ -210,113 +212,103 @@ class UltimatePlayer:
                     ft.Container(height=20), 
                     ft.Container(content=img, border=ft.border.all(4, "white")),
                     ft.Container(height=30),
+                    self.time_label, # Mostra progresso
                     ft.Text(self.current_song_data['title'], size=20, font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
                     ft.Text(self.current_song_data.get('artist','?'), size=14, color="grey", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
                     ft.Container(expand=True), 
                     controls, 
                     ft.Container(height=50)
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
-                # ⚠️ ANCHE QUI PADDING ALTO PER IL PLAYER
                 padding=ft.padding.only(top=50, left=20, right=20, bottom=20), 
                 expand=True, bgcolor="black"
             )
         )
         self.page.update()
 
-    # --- LOGICA PLAYBACK (Thread Safe + Singleton) ---
+    # --- LOGICA PLAYBACK (SINGLE PLAYER - NO GHOSTS) ---
     def play_track_index(self, index):
         if index < 0 or index >= len(self.playlist): return
         
-        # Kill immediato del vecchio audio
-        kill_global_audio(self.page)
-
+        # 1. FERMA IL PLAYER ESISTENTE (Senza distruggerlo)
+        self.audio_player.pause()
+        self.is_playing = False
+        
         self.current_index = index
         self.current_song_data = self.playlist[index]
-        self.is_playing = False # Aspettiamo il download
-        self.show_player_view() # Mostra subito la grafica
+        self.show_player_view() # Aggiorna grafica subito
         
-        # Avvia download e play in background
-        threading.Thread(target=self._download_and_play, args=(self.current_song_data,), daemon=True).start()
+        # 2. SCARICA IN THREAD (Per non bloccare UI)
+        threading.Thread(target=self._download_and_swap_source, args=(self.current_song_data,), daemon=True).start()
 
-    def _download_and_play(self, song_data):
+    def _download_and_swap_source(self, song_data):
         try:
-            # 1. DOWNLOAD
+            self.time_label.value = "DOWNLOADING..."
+            self.time_label.color = "yellow"
+            self.page.update()
+
             p = self.get_auth_params()
             p['id'] = song_data['id']
-            # Forziamo MP3 128k (massima compatibilità)
             url = f"{self.base_url}/rest/stream?id={song_data['id']}&format=mp3&maxBitRate=128"
             for k, v in p.items(): url += f"&{k}={v}"
 
-            # File locale univoco per evitare conflitti
-            filename = f"current_{int(time.time())}.mp3"
+            filename = f"track_{song_data['id']}.mp3"
             path = os.path.join(CACHE_DIR, filename)
 
-            # Scarica
-            with requests.get(url, stream=True, timeout=10) as r:
-                r.raise_for_status()
-                with open(path, 'wb') as f:
-                    for chunk in r.iter_content(32768):
-                        if chunk: f.write(chunk)
+            # Scarica solo se non esiste o è vuoto
+            if not (os.path.exists(path) and os.path.getsize(path) > 1000):
+                with requests.get(url, stream=True, timeout=10) as r:
+                    r.raise_for_status()
+                    with open(path, 'wb') as f:
+                        for chunk in r.iter_content(32768):
+                            if chunk: f.write(chunk)
             
-            # 2. PLAY (Thread Safe Call)
-            self._start_playback_safe(path)
+            # 3. CAMBIA SORGENTE E PLAY (Thread Safe su player unico)
+            # Usiamo self.audio_player che è stato creato in __init__ ed è UNICO.
+            self.audio_player.src = path
+            self.audio_player.update() # Aggiorna la proprietà src
+            self.audio_player.resume() # Play
+            
+            self.is_playing = True
+            self.btn_play_icon.name = ft.Icons.PAUSE
+            self.time_label.value = "PLAYING"
+            self.time_label.color = "green"
+            self.page.update()
 
         except Exception as e:
+            self.time_label.value = "ERROR"
+            self.time_label.color = "red"
+            self.page.update()
             print(f"DL Error: {e}")
 
-    def _start_playback_safe(self, path):
-        # Poiché siamo in un thread, non possiamo toccare la UI direttamente se non siamo attenti.
-        # Ma Flet gestisce bene gli aggiornamenti se passiamo per page.update()
-        global _GLOBAL_PLAYER
-        try:
-            self.is_playing = True
-            
-            # Creiamo il player
-            _GLOBAL_PLAYER = flet_audio.Audio(
-                src=path,
-                autoplay=True,
-                volume=1.0,
-                on_state_changed=self.on_audio_state
-            )
-            
-            # Lo iniettiamo nella pagina
-            self.page.overlay.append(_GLOBAL_PLAYER)
-            
-            # Aggiorniamo icona e pagina
-            if hasattr(self, 'btn_play_icon'): 
-                self.btn_play_icon.name = ft.Icons.PAUSE
-            self.page.update()
-            
-        except Exception as e:
-            print(f"Playback Error: {e}")
-
     def toggle_play_pause(self, e):
-        global _GLOBAL_PLAYER
-        if not _GLOBAL_PLAYER: return
-        
         if self.is_playing:
-            _GLOBAL_PLAYER.pause()
+            self.audio_player.pause()
             self.is_playing = False
             self.btn_play_icon.name = ft.Icons.PLAY_ARROW
         else:
-            _GLOBAL_PLAYER.resume()
+            self.audio_player.resume()
             self.is_playing = True
             self.btn_play_icon.name = ft.Icons.PAUSE
         
         self.page.update()
-        _GLOBAL_PLAYER.update()
+
+    def on_audio_position(self, e):
+        # Aggiorna il tempo solo se siamo nel player view
+        if self.page.floating_action_button is None: # Siamo nel player
+            ms = int(e.data)
+            self.time_label.value = f"{ms // 1000}s"
+            self.page.update()
+
+    def on_audio_state(self, e):
+        if e.data == "completed":
+            self.next_track()
 
     def next_track(self, e=None):
         self.play_track_index((self.current_index + 1) % len(self.playlist))
 
     def prev_track(self, e=None):
         self.play_track_index((self.current_index - 1) % len(self.playlist))
-        
-    def on_audio_state(self, e):
-        if e.data == "completed":
-            self.next_track()
 
-    # --- FETCH DATA ---
     def fetch_songs(self):
         self.songs_column.controls.append(ft.Text("LOADING...", font_family=self.FONT_NAME))
         self.page.update()
