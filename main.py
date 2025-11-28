@@ -3,6 +3,7 @@ import random
 import string
 import requests
 import flet as ft
+import flet_audio
 import time
 
 # --- ⚠️ CONFIGURAZIONE ⚠️ ---
@@ -74,7 +75,7 @@ class UltimatePlayer:
     def load_library_view(self, url):
         self.base_url = url
         self.page.clean()
-        self.cleanup_audio() # Pulizia sicura
+        self.cleanup_audio() 
 
         header = ft.Container(
             content=ft.Row([
@@ -181,33 +182,26 @@ class UltimatePlayer:
         )
         self.page.update()
 
-    # --- 🛡️ CLEANUP FIXATO (NO CRASH) 🛡️ ---
+    # --- 🛡️ CLEANUP AGGIORNATO 🛡️ ---
     def cleanup_audio(self):
-        # Invece di controllare il tipo, controlliamo se l'oggetto esiste
         if self.audio_player:
             try:
-                # Proviamo a rilasciare le risorse
                 self.audio_player.release()
-                # Proviamo a rimuoverlo dalla pagina se presente
                 if self.audio_player in self.page.overlay:
                     self.page.overlay.remove(self.audio_player)
                     self.page.update()
-            except Exception as e:
-                print(f"Cleanup Warning: {e}")
-            
-            # Reset della variabile
+            except: pass
             self.audio_player = None
 
-    # --- LOGICA AUDIO ---
+    # --- LOGICA AUDIO NUOVA (flet_audio) ---
     def play_track_index(self, index):
         if index < 0 or index >= len(self.playlist): return
         
-        # Anti-Spam
         current_time = time.time()
         if current_time - self.last_click_time < 0.5: return 
         self.last_click_time = current_time
 
-        self.cleanup_audio() # Rimuovi il vecchio in modo sicuro
+        self.cleanup_audio() 
 
         self.current_index = index
         self.current_song_data = self.playlist[index]
@@ -218,7 +212,8 @@ class UltimatePlayer:
         audio_url = f"{self.base_url}/rest/stream?id={self.current_song_data['id']}&format=mp3&maxBitRate=320"
         for k, v in params.items(): audio_url += f"&{k}={v}"
 
-        self.audio_player = ft.Audio(
+        # USARE LA NUOVA CLASSE flet_audio.Audio
+        self.audio_player = flet_audio.Audio(
             src=audio_url,
             autoplay=True,
             volume=1.0,
