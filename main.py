@@ -22,15 +22,15 @@ class UltimatePlayer:
         self.is_playing = False 
         self.last_click_time = 0 
         
-        # Inizializziamo config vuota
+        # Config Default
         self.config = {
-            "ip_home": "http://192.168.1.20:4533", # Default
+            "ip_home": "http://192.168.1.20:4533",
             "ip_remote": "http://100.x.y.z:4533",
             "user": "admin",
             "pass": "admin"
         }
 
-        # STILE
+        # Stile
         self.COLOR_BG = "#000000"       
         self.COLOR_TEXT = "#FFFFFF"     
         self.FONT_NAME = "Courier New"  
@@ -43,73 +43,66 @@ class UltimatePlayer:
         self.songs_column = ft.Column(spacing=0, scroll=ft.ScrollMode.AUTO)
         self.debug_label = ft.Text("SYSTEM READY", color="grey", size=10, font_family=self.FONT_NAME)
 
-    # --- FUNZIONE DI AVVIO SICURO (Chiamata DOPO che l'app è visibile) ---
+    # --- AVVIO SICURO ---
     def safe_boot(self):
         try:
-            # 1. SETUP CACHE (Protetto)
+            # Setup Cache
             self.cache_dir = os.path.join(os.getenv("TMPDIR") or "/tmp", "navix_buffer")
             if os.path.exists(self.cache_dir):
                 try: shutil.rmtree(self.cache_dir)
                 except: pass
             os.makedirs(self.cache_dir, exist_ok=True)
             
-            # 2. CARICAMENTO DATI (Protetto)
-            # Se fallisce, usa i default e va al setup
+            # Caricamento Dati
             try:
                 if self.page.client_storage.contains_key("navix_cfg"):
                     saved = self.page.client_storage.get("navix_cfg")
                     if saved: self.config = saved
-                    self.show_selector() # Dati trovati -> Selettore
+                    self.show_selector()
                 else:
-                    self.show_setup_screen() # Nessun dato -> Setup
+                    self.show_setup_screen()
             except Exception as e:
-                print(f"Storage Error: {e}")
-                self.show_setup_screen() # Errore memoria -> Setup
+                self.show_setup_screen()
 
         except Exception as e:
             self.page.clean()
-            self.page.add(ft.Text(f"CRITICAL BOOT ERROR:\n{e}", color="red", size=20))
+            self.page.add(ft.Text(f"BOOT ERROR: {e}", color="red"))
             self.page.update()
 
-    # --- SCHERMATA SETUP ---
+    # --- SETUP ---
     def show_setup_screen(self):
         self.page.clean()
         
-        txt_ip_home = ft.TextField(label="HOME IP", value=self.config["ip_home"], border_color="green", text_style=ft.TextStyle(font_family=self.FONT_NAME))
-        txt_ip_remote = ft.TextField(label="REMOTE IP", value=self.config["ip_remote"], border_color="red", text_style=ft.TextStyle(font_family=self.FONT_NAME))
-        txt_user = ft.TextField(label="USER", value=self.config["user"], border_color="white", text_style=ft.TextStyle(font_family=self.FONT_NAME))
-        txt_pass = ft.TextField(label="PASS", value=self.config["pass"], password=True, can_reveal_password=True, border_color="white", text_style=ft.TextStyle(font_family=self.FONT_NAME))
+        # Stile Input
+        style = ft.TextStyle(font_family=self.FONT_NAME)
+        txt_ip_h = ft.TextField(label="HOME IP", value=self.config["ip_home"], border_color="green", text_style=style)
+        txt_ip_r = ft.TextField(label="REMOTE IP", value=self.config["ip_remote"], border_color="red", text_style=style)
+        txt_usr = ft.TextField(label="USER", value=self.config["user"], border_color="white", text_style=style)
+        txt_pwd = ft.TextField(label="PASS", value=self.config["pass"], password=True, can_reveal_password=True, border_color="white", text_style=style)
         
         def save_data(e):
-            if not txt_ip_home.value or not txt_user.value:
-                txt_user.error_text = "REQUIRED"
-                self.page.update()
-                return
-            
+            if not txt_ip_h.value or not txt_usr.value: return
             try:
                 self.config = {
-                    "ip_home": txt_ip_home.value.strip(),
-                    "ip_remote": txt_ip_remote.value.strip(),
-                    "user": txt_user.value.strip(),
-                    "pass": txt_pass.value.strip()
+                    "ip_home": txt_ip_h.value.strip(),
+                    "ip_remote": txt_ip_r.value.strip(),
+                    "user": txt_usr.value.strip(),
+                    "pass": txt_pwd.value.strip()
                 }
                 self.page.client_storage.set("navix_cfg", self.config)
                 self.show_selector()
-            except Exception as ex:
-                self.page.snack_bar = ft.SnackBar(ft.Text(f"Save Error: {ex}"))
-                self.page.snack_bar.open = True
-                self.page.update()
+            except: pass
 
         self.page.add(
             ft.Container(
                 content=ft.Column([
-                    ft.Text("/// INITIAL SETUP ///", size=24, color="white", font_family=self.FONT_NAME),
+                    ft.Text("/// SETUP ///", size=24, color="white", font_family=self.FONT_NAME),
                     ft.Container(height=20),
-                    txt_ip_home, ft.Container(height=10),
-                    txt_ip_remote, ft.Container(height=10),
-                    txt_user, ft.Container(height=10),
-                    txt_pass, ft.Container(height=30),
-                    ft.ElevatedButton("SAVE SYSTEM", on_click=save_data, bgcolor="white", color="black")
+                    txt_ip_h, ft.Container(height=10),
+                    txt_ip_r, ft.Container(height=10),
+                    txt_usr, ft.Container(height=10),
+                    txt_pwd, ft.Container(height=30),
+                    ft.ElevatedButton("SAVE", on_click=save_data, bgcolor="white", color="black")
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
                 padding=30, alignment=ft.alignment.center, expand=True
             )
@@ -118,37 +111,35 @@ class UltimatePlayer:
     def get_auth_params(self):
         salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
         token = hashlib.md5((self.config["pass"] + salt).encode('utf-8')).hexdigest()
-        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'SafeClient', 'f': 'json'}
+        return {'u': self.config["user"], 't': token, 's': salt, 'v': '1.16.1', 'c': 'SafeApp', 'f': 'json'}
 
     # --- SELEZIONE ---
     def show_selector(self):
         self.page.clean()
         
-        def reset_config(e):
+        def reset(e):
             self.page.client_storage.remove("navix_cfg")
             self.show_setup_screen()
 
-        def make_btn(text, icon, color, url):
+        def mk_btn(txt, icon, col, url):
             return ft.Container(
                 content=ft.Column([
                     ft.Icon(icon, size=40, color="black"),
-                    ft.Text(text, weight="bold", color="black", font_family=self.FONT_NAME)
+                    ft.Text(txt, weight="bold", color="black", font_family=self.FONT_NAME)
                 ], alignment=ft.MainAxisAlignment.CENTER),
-                bgcolor=color,
-                width=180, height=140,
-                border=ft.border.all(4, "white"),
+                bgcolor=col, width=180, height=140, border=ft.border.all(4, "white"),
                 on_click=lambda _: self.load_library_view(url)
             )
 
         self.page.add(
             ft.Container(
                 content=ft.Column([
-                    ft.Row([ft.IconButton(ft.Icons.SETTINGS, icon_color="grey", on_click=reset_config)], alignment=ft.MainAxisAlignment.END),
+                    ft.Row([ft.IconButton(ft.Icons.SETTINGS, icon_color="grey", on_click=reset)], alignment=ft.MainAxisAlignment.END),
                     ft.Text("/// SYSTEM BOOT ///", color="white", size=24, font_family=self.FONT_NAME),
                     ft.Container(height=40),
-                    make_btn("LOCAL NETWORK", ft.Icons.HOME, "#00FF00", self.config["ip_home"]),
+                    mk_btn("LOCAL", ft.Icons.HOME, "#00FF00", self.config["ip_home"]),
                     ft.Container(height=20),
-                    make_btn("SECURE VPN", ft.Icons.PUBLIC, "#FF0000", self.config["ip_remote"])
+                    mk_btn("VPN", ft.Icons.PUBLIC, "#FF0000", self.config["ip_remote"])
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, alignment=ft.MainAxisAlignment.CENTER),
                 alignment=ft.alignment.center, expand=True
             )
@@ -165,22 +156,19 @@ class UltimatePlayer:
                 ft.Icon(ft.Icons.STORAGE, color="white", size=20),
                 ft.Text("DATABASE", color="white", font_family=self.FONT_NAME, size=16, weight="bold")
             ], alignment=ft.MainAxisAlignment.CENTER),
-            bgcolor="#111111", padding=20,
-            border=ft.border.only(bottom=ft.border.BorderSide(2, "white"))
+            bgcolor="#111111", padding=20, border=ft.border.only(bottom=ft.border.BorderSide(2, "white"))
         )
 
-        floating_btn = None
+        f_btn = None
         if self.current_song_data:
-             floating_btn = ft.FloatingActionButton(
+             f_btn = ft.FloatingActionButton(
                  icon=ft.Icons.MUSIC_NOTE, bgcolor="white", 
                  content=ft.Icon(ft.Icons.MUSIC_NOTE, color="black"),
                  on_click=lambda _: self.show_player_view()
              )
 
-        self.page.add(
-            ft.Column([header, ft.Container(content=self.songs_column, expand=True)], expand=True)
-        )
-        self.page.floating_action_button = floating_btn
+        self.page.add(ft.Column([header, ft.Container(content=self.songs_column, expand=True)], expand=True))
+        self.page.floating_action_button = f_btn
         if not self.playlist: self.fetch_songs()
         self.page.update()
 
@@ -195,11 +183,11 @@ class UltimatePlayer:
             params = self.get_auth_params()
             params['id'] = song['id']
             params['size'] = 600
-            cover_req = requests.Request('GET', f"{self.base_url}/rest/getCoverArt", params=params)
-            cover_url = cover_req.prepare().url
+            req = requests.Request('GET', f"{self.base_url}/rest/getCoverArt", params=params)
+            cover_url = req.prepare().url
         except: cover_url = ""
 
-        fallback_image = ft.Container(
+        fallback = ft.Container(
             content=ft.Column([
                 ft.Icon(ft.Icons.FACE, size=100, color="white"), 
                 ft.Text("NO DATA", font_family=self.FONT_NAME, color="grey")
@@ -207,11 +195,9 @@ class UltimatePlayer:
             bgcolor="#222222", alignment=ft.alignment.center, border=ft.border.all(2, "white")
         )
 
-        album_art = ft.Image(
-            src=cover_url, width=300, height=300, fit=ft.ImageFit.COVER,
-            error_content=fallback_image, border_radius=0, 
-        )
+        img = ft.Image(src=cover_url, width=300, height=300, fit=ft.ImageFit.COVER, error_content=fallback, border_radius=0)
 
+        # Pulsanti definiti singolarmente per evitare errori di parentesi
         btn_prev = ft.Container(
             content=ft.Text("<<<", color="white", size=24, weight="bold", font_family=self.FONT_NAME),
             padding=20, on_click=self.prev_track, ink=True
@@ -219,4 +205,196 @@ class UltimatePlayer:
 
         btn_next = ft.Container(
             content=ft.Text(">>>", color="white", size=24, weight="bold", font_family=self.FONT_NAME),
-            padding=20, on_
+            padding=20, on_click=self.next_track, ink=True
+        )
+
+        play_icon = ft.Icons.PAUSE if self.is_playing else ft.Icons.PLAY_ARROW
+        self.btn_play_content = ft.Icon(play_icon, color="white", size=40)
+        
+        btn_play = ft.Container(
+            content=self.btn_play_content,
+            width=80, height=80, bgcolor="black",
+            border=ft.border.all(3, "white"), border_radius=40,
+            alignment=ft.alignment.center, on_click=self.toggle_play_pause, ink=True
+        )
+
+        controls = ft.Row([btn_prev, btn_play, btn_next], alignment=ft.MainAxisAlignment.CENTER, spacing=30)
+        back_btn = ft.IconButton(ft.Icons.ARROW_BACK, icon_color="white", on_click=lambda _: self.load_library_view(self.base_url))
+
+        self.page.add(
+            ft.Container(
+                content=ft.Column([
+                    ft.Row([back_btn], alignment=ft.MainAxisAlignment.START),
+                    ft.Container(height=20),
+                    ft.Container(content=img, border=ft.border.all(4, "white"), padding=0),
+                    ft.Container(height=20),
+                    self.debug_label,
+                    ft.Container(height=20),
+                    ft.Text(song['title'], size=20, weight="bold", color="white", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
+                    ft.Text(song.get('artist', 'Unknown'), size=14, color="grey", font_family=self.FONT_NAME, text_align=ft.TextAlign.CENTER),
+                    ft.Container(expand=True),
+                    controls,
+                    ft.Container(height=50)
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                padding=20, expand=True, bgcolor="black"
+            )
+        )
+        self.page.update()
+
+    def cleanup_audio(self):
+        if self.audio_player:
+            try:
+                self.audio_player.release()
+                if self.audio_player in self.page.overlay:
+                    self.page.overlay.remove(self.audio_player)
+                    self.page.update()
+            except: pass
+            self.audio_player = None
+
+    def play_track_index(self, index):
+        if index < 0 or index >= len(self.playlist): return
+        if time.time() - self.last_click_time < 0.5: return 
+        self.last_click_time = time.time()
+
+        self.cleanup_audio() 
+        self.current_index = index
+        self.current_song_data = self.playlist[index]
+        self.is_playing = False
+        self.show_player_view()
+        
+        s_id = self.current_song_data['id']
+        file_path = os.path.join(self.cache_dir, f"{s_id}.mp3")
+        
+        if os.path.exists(file_path) and os.path.getsize(file_path) > 1000:
+            self._start_playback(file_path, "PLAYING (INSTANT)")
+            threading.Thread(target=self._preload_next, args=(index,), daemon=True).start()
+        else:
+            threading.Thread(target=self._dl_manager, args=(index,), daemon=True).start()
+
+    def _dl_manager(self, index):
+        s_id = self.playlist[index]['id']
+        path = os.path.join(self.cache_dir, f"{s_id}.mp3")
+        self.debug_label.value = "DOWNLOADING..."
+        self.debug_label.color = "yellow"
+        self.page.update()
+        
+        if self._dl_file(s_id, path):
+            self._start_playback(path, "PLAYING (FETCHED)")
+            self._preload_next(index)
+        else:
+            self.debug_label.value = "DL FAILED"
+            self.page.update()
+
+    def _preload_next(self, index):
+        ids = [self.playlist[index]['id']]
+        for i in range(1, 4):
+            nxt_idx = (index + i) % len(self.playlist)
+            nxt_data = self.playlist[nxt_idx]
+            path = os.path.join(self.cache_dir, f"{nxt_data['id']}.mp3")
+            ids.append(nxt_data['id'])
+            if not os.path.exists(path): self._dl_file(nxt_data['id'], path)
+        self._prune(ids)
+
+    def _dl_file(self, s_id, path):
+        try:
+            p = self.get_auth_params()
+            p['id'] = s_id
+            url = f"{self.base_url}/rest/stream?id={s_id}&format=mp3&maxBitRate=128"
+            for k, v in p.items(): url += f"&{k}={v}"
+            with requests.get(url, stream=True, timeout=15) as r:
+                r.raise_for_status()
+                with open(path+".tmp", 'wb') as f:
+                    for c in r.iter_content(8192): f.write(c)
+                os.rename(path+".tmp", path)
+            return True
+        except: return False
+
+    def _prune(self, ids):
+        try:
+            for f in glob.glob(os.path.join(self.cache_dir, "*.mp3")):
+                if os.path.basename(f).replace(".mp3", "") not in ids:
+                    try: os.remove(f)
+                    except: pass
+        except: pass
+
+    def _start_playback(self, path, msg):
+        try:
+            self.debug_label.value = msg
+            self.debug_label.color = "#00FF00"
+            self.is_playing = True
+            if hasattr(self, 'btn_play_content'): self.btn_play_content.name = ft.Icons.PAUSE
+            self.page.update()
+            self.audio_player = flet_audio.Audio(
+                src=path, autoplay=True, volume=1.0,
+                on_state_changed=self.on_audio_state,
+                on_position_changed=self.on_pos
+            )
+            self.page.overlay.append(self.audio_player)
+            self.page.update()
+        except: pass
+
+    def on_pos(self, e):
+        self.debug_label.value = f"PLAYING: {int(int(e.data)/1000)}s"
+        self.page.update()
+
+    def toggle_play_pause(self, e):
+        if not self.audio_player: return
+        if self.is_playing:
+            self.audio_player.pause()
+            self.is_playing = False
+            self.btn_play_content.name = ft.Icons.PLAY_ARROW
+        else:
+            self.audio_player.resume()
+            self.is_playing = True
+            self.btn_play_content.name = ft.Icons.PAUSE
+        self.btn_play_content.update()
+        self.audio_player.update()
+
+    def next_track(self, e=None):
+        self.play_track_index((self.current_index + 1) % len(self.playlist))
+
+    def prev_track(self, e=None):
+        self.play_track_index((self.current_index - 1) % len(self.playlist))
+        
+    def on_audio_state(self, e):
+        if e.data == "completed": self.next_track()
+
+    def fetch_songs(self):
+        self.songs_column.controls.append(ft.Text("LOADING...", color="white", font_family=self.FONT_NAME))
+        self.page.update()
+        try:
+            params = self.get_auth_params()
+            params['size'] = 100
+            res = requests.get(f"{self.base_url}/rest/getRandomSongs", params=params, timeout=10)
+            data = res.json()
+            self.songs_column.controls.clear()
+            self.playlist = []
+            if 'randomSongs' in data['subsonic-response']:
+                songs = data['subsonic-response']['randomSongs']['song']
+                for idx, s in enumerate(songs):
+                    self.playlist.append(s)
+                    row = ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.MUSIC_NOTE, color="white"),
+                            ft.Column([
+                                ft.Text(s['title'], color="white", weight="bold", font_family=self.FONT_NAME, no_wrap=True),
+                                ft.Text(s.get('artist', 'Unknown'), color="grey", size=12, font_family=self.FONT_NAME)
+                            ], expand=True)
+                        ]),
+                        padding=15, bgcolor="#000000" if idx % 2 == 0 else "#111111",
+                        border=ft.border.only(bottom=ft.border.BorderSide(1, "#333333")),
+                        on_click=lambda e, i=idx: self.play_track_index(i)
+                    )
+                    self.songs_column.controls.append(row)
+            else: self.songs_column.controls.append(ft.Text("NO SONGS", color="red"))
+        except: self.songs_column.controls.append(ft.Text("ERROR", color="red"))
+        self.page.update()
+
+def main(page: ft.Page):
+    app = UltimatePlayer(page)
+    page.add(ft.Text("BOOTING...", color="green", font_family="Courier New"))
+    time.sleep(0.5)
+    page.clean()
+    app.safe_boot()
+
+ft.app(target=main)
